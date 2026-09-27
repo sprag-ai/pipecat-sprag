@@ -1,0 +1,52 @@
+[project]
+name = "pipecat-sprag-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pipecat-sprag-common",
+    "pipecat-sprag-llm",
+    "pipecat-sprag-stt",
+    "pipecat-sprag-tts",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+pipecat-sprag-common = { workspace = true }
+pipecat-sprag-llm = { workspace = true }
+pipecat-sprag-stt = { workspace = true }
+pipecat-sprag-tts = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pipecat_sprag"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["live: calls api.sprag.ai and needs SPRAG_API_KEY"]
+addopts = "-m 'not live'"
+
+[tool.mypy]
+strict = true
+namespace_packages = true
+explicit_package_bases = true
+mypy_path = ["packages/pipecat-sprag-common/src", "packages/pipecat-sprag-llm/src", "packages/pipecat-sprag-stt/src", "packages/pipecat-sprag-tts/src"]
