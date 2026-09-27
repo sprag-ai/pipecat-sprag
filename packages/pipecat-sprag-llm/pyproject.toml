@@ -9,7 +9,7 @@ description = "Sprag Symphony LLM service for Pipecat"
 readme = "README.md"
 license = "BSD-2-Clause"
 requires-python = ">=3.11"
-authors = [{ name = "Sprag" }]
+authors = [{ name = "Sprag AI Inc." }]
 keywords = ["pipecat", "sprag", "voice", "ai"]
 dependencies = [
     "pipecat-ai>=1.8,<2",

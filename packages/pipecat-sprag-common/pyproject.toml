@@ -9,7 +9,7 @@ description = "Shared configuration for the Sprag Pipecat services"
 readme = "README.md"
 license = "BSD-2-Clause"
 requires-python = ">=3.11"
-authors = [{ name = "Sprag" }]
+authors = [{ name = "Sprag AI Inc." }]
 keywords = ["pipecat", "sprag", "voice", "ai"]
 dependencies = []
 
