@@ -44,6 +44,7 @@ from pipecat_sprag.tts import SpragTTSService
 
 pytestmark = [
     pytest.mark.live,
+    pytest.mark.timeout(120),
     pytest.mark.skipif(not os.environ.get("SPRAG_API_KEY"), reason="needs SPRAG_API_KEY"),
 ]
 
