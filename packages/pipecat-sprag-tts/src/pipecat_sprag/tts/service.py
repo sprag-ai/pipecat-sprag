@@ -86,6 +86,8 @@ class SpragTTSService(InterruptibleTTSService):
         self._idle.set()
         self._response_context: str | None = None
         self._flushed_context: str | None = None
+        # run_tts and the receive loop's reconnect may both reach for a new socket
+        self._connect_lock = asyncio.Lock()
 
     def can_generate_metrics(self) -> bool:
         """Report that this service emits TTFB and usage metrics.
@@ -144,6 +146,10 @@ class SpragTTSService(InterruptibleTTSService):
         await self._disconnect_websocket()
 
     async def _connect_websocket(self) -> None:
+        async with self._connect_lock:
+            await self._open_session()
+
+    async def _open_session(self) -> None:
         if self._websocket and self._websocket.state is State.OPEN:
             return
         self._reset_response_state()
@@ -182,7 +188,11 @@ class SpragTTSService(InterruptibleTTSService):
                 await self._websocket.close()
         finally:
             self._websocket = None
+            # a flush that was waiting on the lost response still has to end the turn
+            flushed = self._flushed_context
             self._reset_response_state()
+            if flushed is not None:
+                await self._close_context(flushed)
             await self._call_event_handler("on_disconnected")
 
     def _reset_response_state(self) -> None:
@@ -286,8 +296,12 @@ class SpragTTSService(InterruptibleTTSService):
             yield ErrorFrame(error="Sprag TTS: the previous response did not finish")
             await self._disconnect()
             await self._connect()
-            if not self._websocket:
-                return
+        # a dropped connection opens the gate while the receive loop reconnects
+        if not self._websocket or self._websocket.state is not State.OPEN:
+            await self._connect_websocket()
+        if not self._websocket:
+            yield ErrorFrame(error="Sprag TTS is not connected")
+            return
         self._idle.clear()
         self._response_context = context_id
         item = {

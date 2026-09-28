@@ -40,23 +40,36 @@ class _SpeechServer:
 
     ``script`` maps a response's index, counted across connections, to a behaviour:
     ``ok`` (the default), ``slow`` (a pause mid-response), ``hang`` (one audio delta,
-    then nothing), ``stall`` (no reply), ``error:<code>``, or ``failed:<code>``.
+    then nothing), ``drop:<code>`` (one audio delta, then the server closes the socket),
+    ``stall`` (no reply), ``error:<code>``, or ``failed:<code>``. With ``refuse_reconnects``,
+    every handshake after the first is answered with a 503.
     """
 
-    def __init__(self, *, reject_voice: bool = False, script: dict[int, str] | None = None):
+    def __init__(
+        self,
+        *,
+        reject_voice: bool = False,
+        refuse_reconnects: bool = False,
+        script: dict[int, str] | None = None,
+    ):
         self.reject_voice = reject_voice
+        self.refuse_reconnects = refuse_reconnects
         self.script = script or {}
+        self.open: list[web.WebSocketResponse] = []
         self.handshakes: list[web.Request] = []
         self.voices: list[str] = []
         self.spoken: list[tuple[int, str]] = []
         self.overlaps = 0
         self.closed = 0
 
-    async def handle(self, request: web.Request) -> web.WebSocketResponse:
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        if self.refuse_reconnects and self.handshakes:
+            return web.Response(status=503, text="unavailable")
         connection = len(self.handshakes)
         self.handshakes.append(request)
         ws = web.WebSocketResponse()
         await ws.prepare(request)
+        self.open.append(ws)
         await ws.send_json({"type": "session.created", "session": {}})
         pending: list[str] = []
         active: asyncio.Task[None] | None = None
@@ -100,8 +113,13 @@ class _SpeechServer:
                 active = asyncio.create_task(self._respond(ws, behaviour, self.spoken[-1][1]))
         if active is not None:
             active.cancel()
+        self.open.remove(ws)
         self.closed += 1
         return ws
+
+    async def close_idle(self, code: int) -> None:
+        for ws in list(self.open):
+            await ws.close(code=code)
 
     async def _respond(self, ws: web.WebSocketResponse, behaviour: str, text: str) -> None:
         kind, _, arg = behaviour.partition(":")
@@ -127,6 +145,9 @@ class _SpeechServer:
             await ws.send_json({"type": "response.output_audio.delta", "delta": delta})
             if kind == "hang":
                 await asyncio.Event().wait()
+            if kind == "drop":
+                await ws.close(code=int(arg))
+                return
             if kind == "slow" and i == 0:
                 await asyncio.sleep(0.3)
             else:
@@ -393,6 +414,74 @@ async def test_blank_input_sends_nothing(speech: Any) -> None:
     tts = SpragTTSService(api_key="test-key", url=url)
     await run_until_playing(tts, [TTSSpeakFrame("   "), TTSSpeakFrame("Real words.")], _stopped)
     assert server.texts == ["Real words."]
+
+
+async def test_a_dropped_connection_moves_the_turn_to_a_new_one(speech: Any) -> None:
+    server, url = await speech(script={0: "drop:1011"})
+    tts = SpragTTSService(api_key="test-key", url=url)
+    down, up = await run_until_playing(
+        tts,
+        _turn("The server drops this first sentence. ", "The second sentence is spoken anyway."),
+        _stopped,
+    )
+    assert server.texts == [
+        "The server drops this first sentence.",
+        "The second sentence is spoken anyway.",
+    ]
+    assert [connection for connection, _ in server.spoken] == [0, 1]
+    assert len(server.handshakes) == 2
+    assert server.overlaps == 0
+    # half of the first sentence, then all of the second
+    assert _audio(down) == pytest.approx(0.15, abs=0.01)
+
+
+async def test_a_turn_ends_promptly_when_its_last_sentence_is_dropped(speech: Any) -> None:
+    server, url = await speech(script={0: "drop:1011"})
+    tts = SpragTTSService(api_key="test-key", url=url)
+    started = asyncio.get_running_loop().time()
+    down, _ = await run_until_playing(tts, [TTSSpeakFrame("Only this sentence.")], _stopped)
+    elapsed = asyncio.get_running_loop().time() - started
+    # well inside Pipecat's 3 s stop-frame timeout, which would otherwise end the turn
+    assert elapsed < 1.5
+    assert _audio(down) == pytest.approx(0.05, abs=0.01)
+
+
+async def test_an_idle_connection_closed_by_the_server_is_replaced(speech: Any) -> None:
+    server, url = await speech()
+    tts = SpragTTSService(api_key="test-key", url=url)
+
+    closed: list[bool] = []
+
+    def session_cap(down: list[Frame], up: list[Frame]) -> bool:
+        if not closed:
+            closed.append(True)
+            asyncio.get_running_loop().create_task(server.close_idle(code=1000))
+        return len(server.handshakes) == 2
+
+    down, up = await run_until_playing(
+        tts,
+        [
+            TTSSpeakFrame("Before the session cap."),
+            _stopped_times(1),
+            session_cap,
+            TTSSpeakFrame("After the session cap."),
+        ],
+        _stopped_times(2),
+    )
+    assert _errors(up) == []
+    assert server.spoken == [(0, "Before the session cap."), (1, "After the session cap.")]
+
+
+async def test_refused_reconnects_do_not_hang_the_pipeline(speech: Any) -> None:
+    server, url = await speech(script={0: "drop:1011"}, refuse_reconnects=True)
+    tts = SpragTTSService(api_key="test-key", url=url)
+    down, up = await run_until_playing(
+        tts,
+        [TTSSpeakFrame("The server drops this."), _stopped_times(1), TTSSpeakFrame("Unspoken.")],
+        _stopped_times(2),
+    )
+    assert _errors(up)
+    assert server.texts == ["The server drops this."]
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
