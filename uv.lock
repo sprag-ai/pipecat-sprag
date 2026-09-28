@@ -9,15 +9,6 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
-[manifest]
-members = [
-    "pipecat-sprag-common",
-    "pipecat-sprag-llm",
-    "pipecat-sprag-stt",
-    "pipecat-sprag-tts",
-    "pipecat-sprag-workspace",
-]
-
 [[package]]
 name = "agent-detector"
 version = "2.0.0"
@@ -2247,64 +2238,11 @@ wheels = [
 ]
 
 [[package]]
-name = "pipecat-sprag-common"
+name = "pipecat-sprag"
 version = "0.1.0"
-source = { editable = "packages/pipecat-sprag-common" }
-
-[[package]]
-name = "pipecat-sprag-llm"
-version = "0.1.0"
-source = { editable = "packages/pipecat-sprag-llm" }
+source = { editable = "." }
 dependencies = [
     { name = "pipecat-ai" },
-    { name = "pipecat-sprag-common" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pipecat-ai", specifier = ">=1.8,<2" },
-    { name = "pipecat-sprag-common", editable = "packages/pipecat-sprag-common" },
-]
-
-[[package]]
-name = "pipecat-sprag-stt"
-version = "0.1.0"
-source = { editable = "packages/pipecat-sprag-stt" }
-dependencies = [
-    { name = "pipecat-ai" },
-    { name = "pipecat-sprag-common" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pipecat-ai", specifier = ">=1.8,<2" },
-    { name = "pipecat-sprag-common", editable = "packages/pipecat-sprag-common" },
-]
-
-[[package]]
-name = "pipecat-sprag-tts"
-version = "0.1.0"
-source = { editable = "packages/pipecat-sprag-tts" }
-dependencies = [
-    { name = "pipecat-ai" },
-    { name = "pipecat-sprag-common" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pipecat-ai", specifier = ">=1.8,<2" },
-    { name = "pipecat-sprag-common", editable = "packages/pipecat-sprag-common" },
-]
-
-[[package]]
-name = "pipecat-sprag-workspace"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "pipecat-sprag-common" },
-    { name = "pipecat-sprag-llm" },
-    { name = "pipecat-sprag-stt" },
-    { name = "pipecat-sprag-tts" },
 ]
 
 [package.dev-dependencies]
@@ -2323,12 +2261,7 @@ examples = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "pipecat-sprag-common", editable = "packages/pipecat-sprag-common" },
-    { name = "pipecat-sprag-llm", editable = "packages/pipecat-sprag-llm" },
-    { name = "pipecat-sprag-stt", editable = "packages/pipecat-sprag-stt" },
-    { name = "pipecat-sprag-tts", editable = "packages/pipecat-sprag-tts" },
-]
+requires-dist = [{ name = "pipecat-ai", specifier = ">=1.8,<2" }]
 
 [package.metadata.requires-dev]
 dev = [

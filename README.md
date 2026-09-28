@@ -4,18 +4,16 @@
 
 This integration is maintained by Sprag.
 
-| Package | Service | Model |
+| Service | Import | Model |
 | --- | --- | --- |
-| `pipecat-sprag-stt` | `SpragSTTService` | Rhythm (speech to text) |
-| `pipecat-sprag-llm` | `SpragLLMService` | Symphony (LLM) |
-| `pipecat-sprag-tts` | `SpragTTSService` | Chorus (text to speech) |
+| `SpragSTTService` | `pipecat_sprag.stt` | Rhythm (speech to text) |
+| `SpragLLMService` | `pipecat_sprag.llm` | Symphony (LLM) |
+| `SpragTTSService` | `pipecat_sprag.tts` | Chorus (text to speech) |
 
 ## Installation
 
-Install the services your pipeline uses:
-
 ```bash
-uv add pipecat-sprag-stt pipecat-sprag-llm pipecat-sprag-tts
+uv add pipecat-sprag
 ```
 
 Each service reads your API key from the `SPRAG_API_KEY` environment variable, or takes it as `api_key=`. You can generate a key from [API keys](https://sprag.ai/app/api-keys) in the Sprag app.
@@ -64,7 +62,7 @@ Requires `pipecat-ai>=1.8,<2`. Tested with Pipecat v1.12.0.
 ```bash
 uv sync
 uv run ruff check && uv run ruff format --check
-uv run mypy packages
+uv run mypy src
 uv run pytest
 ```
 

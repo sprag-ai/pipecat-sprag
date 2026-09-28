@@ -3,7 +3,7 @@
 import os
 from importlib.metadata import version
 
-__version__ = version("pipecat-sprag-common")
+__version__ = version("pipecat-sprag")
 
 SPRAG_BASE_URL = "https://api.sprag.ai/v1"
 SPRAG_REALTIME_URL = "wss://api.sprag.ai/v1/realtime"

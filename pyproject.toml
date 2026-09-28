@@ -1,25 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "pipecat-sprag-workspace"
+name = "pipecat-sprag"
 version = "0.1.0"
+description = "Sprag speech and language models for Pipecat: Rhythm STT, Symphony LLM, and Chorus TTS"
+readme = "README.md"
+license = "BSD-2-Clause"
 requires-python = ">=3.11"
-dependencies = [
-    "pipecat-sprag-common",
-    "pipecat-sprag-llm",
-    "pipecat-sprag-stt",
-    "pipecat-sprag-tts",
-]
+authors = [{ name = "Sprag AI Inc." }]
+keywords = ["pipecat", "sprag", "voice", "ai", "stt", "tts", "llm"]
+dependencies = ["pipecat-ai>=1.8,<2"]
 
-[tool.uv]
-package = false
+[project.urls]
+Homepage = "https://sprag.ai"
+Source = "https://github.com/sprag-ai/pipecat-sprag"
+Changelog = "https://github.com/sprag-ai/pipecat-sprag/blob/main/CHANGELOG.md"
 
-[tool.uv.workspace]
-members = ["packages/*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/pipecat_sprag"]
 
-[tool.uv.sources]
-pipecat-sprag-common = { workspace = true }
-pipecat-sprag-llm = { workspace = true }
-pipecat-sprag-stt = { workspace = true }
-pipecat-sprag-tts = { workspace = true }
+[tool.hatch.build.targets.sdist]
+include = ["src/pipecat_sprag", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependency-groups]
 examples = [
@@ -59,6 +62,4 @@ timeout = 30
 strict = true
 # pipecat's own methods are largely unannotated
 disallow_untyped_calls = false
-namespace_packages = true
-explicit_package_bases = true
-mypy_path = ["packages/pipecat-sprag-common/src", "packages/pipecat-sprag-llm/src", "packages/pipecat-sprag-stt/src", "packages/pipecat-sprag-tts/src"]
+mypy_path = ["src"]
