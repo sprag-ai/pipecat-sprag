@@ -3,7 +3,9 @@
 ``SPRAG_TEST_BASE_URL`` points them at another environment (default: production).
 """
 
+import io
 import os
+import wave
 from typing import Any
 
 import httpx
@@ -16,20 +18,29 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     LLMContextFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
     MetricsFrame,
     TranscriptionFrame,
+    TTSAudioRawFrame,
+    TTSStoppedFrame,
+    TTSTextFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
+from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.tests.utils import run_test
 
 from pipecat_sprag.common import SPRAG_BASE_URL
 from pipecat_sprag.llm import SpragLLMService
 from pipecat_sprag.stt import SpragSTTService
+from pipecat_sprag.tts import SpragTTSService
 
 pytestmark = [
     pytest.mark.live,
@@ -127,3 +138,77 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
     assert "tide came in slowly" in _transcript(down)
+
+
+async def test_tts_speaks_a_multi_sentence_turn() -> None:
+    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
+    tts = SpragTTSService(url=realtime_url)
+    turn = [
+        LLMFullResponseStartFrame(),
+        LLMTextFrame("Thanks for calling today, it is good to hear from you. "),
+        LLMTextFrame("Your package shipped this morning and should arrive on Friday."),
+        LLMFullResponseEndFrame(),
+    ]
+    down, up = await run_until(
+        tts,
+        turn,
+        lambda down, up: (
+            any(isinstance(f, TTSStoppedFrame) for f in down)
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        timeout=30,
+        play_audio=True,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    pcm = b"".join(f.audio for f in down if isinstance(f, TTSAudioRawFrame))
+    assert len(pcm) / 2 / 24000 > 3
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(pcm)
+    response = httpx.post(
+        f"{BASE_URL}/audio/transcriptions",
+        headers={"Authorization": f"Bearer {os.environ['SPRAG_API_KEY']}"},
+        data={"model": "rhythm"},
+        files={"file": ("reply.wav", buffer.getvalue(), "audio/wav")},
+        timeout=60,
+    )
+    response.raise_for_status()
+    heard = response.json()["text"].lower()
+    assert "thanks for calling" in heard and "arrive on friday" in heard
+
+
+async def test_voice_agent_answers_a_spoken_question() -> None:
+    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
+    context = LLMContext(
+        messages=[{"role": "system", "content": "Answer in one short sentence."}],
+    )
+    user_aggregator, _ = LLMContextAggregatorPair(context)
+    agent = Pipeline(
+        [
+            SpragSTTService(base_url=realtime_url),
+            user_aggregator,
+            SpragLLMService(base_url=BASE_URL),
+            SpragTTSService(url=realtime_url),
+        ]
+    )
+    question = _audio_frames(_speech_pcm("What is the tallest mountain in the world?"), 0.5)
+    down, up = await run_until(
+        agent,
+        [VADUserStartedSpeakingFrame(), *question, VADUserStoppedSpeakingFrame()],
+        lambda down, up: (
+            any(isinstance(f, TTSStoppedFrame) for f in down)
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        timeout=45,
+        between=0.02,
+        play_audio=True,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    reply = " ".join(f.text for f in down if isinstance(f, TTSTextFrame)).lower()
+    assert "everest" in reply
+    assert sum(len(f.audio) for f in down if isinstance(f, TTSAudioRawFrame)) > 24000 * 2

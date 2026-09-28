@@ -22,7 +22,38 @@ Each service reads your API key from the `SPRAG_API_KEY` environment variable, o
 
 ## Usage
 
-Usage examples land with the services.
+Each service drops into a Pipecat pipeline in place of any other STT, LLM, or TTS service:
+
+```python
+from pipecat_sprag.llm import SpragLLMService
+from pipecat_sprag.stt import SpragSTTService
+from pipecat_sprag.tts import SpragTTSService
+
+stt = SpragSTTService()
+llm = SpragLLMService()
+tts = SpragTTSService(settings=SpragTTSService.Settings(voice="wade"))
+
+pipeline = Pipeline(
+    [transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator]
+)
+```
+
+- **`SpragSTTService`** streams audio to Rhythm over Sprag's realtime API. By default your pipeline's VAD decides when a turn ends; pass `turn_detection={"type": "server_vad"}` to let Sprag detect turns instead.
+- **`SpragLLMService`** runs Symphony through Sprag's chat completions API, with function calling and token usage metrics.
+- **`SpragTTSService`** streams Chorus speech over Sprag's realtime API, one sentence at a time. It defaults to the `chorus-clone` model and the `wade` voice; the available voices are listed in [voice presets](https://sprag.ai/docs/tts/voices/presets).
+
+Each service takes `settings=<Service>.Settings(...)` for its model and other options, and `api_key=` if you don't use the `SPRAG_API_KEY` environment variable.
+
+## Example
+
+[`examples/voice_agent.py`](examples/voice_agent.py) is a complete voice agent running on Rhythm, Symphony, and Chorus. It uses Pipecat's development runner:
+
+```bash
+uv sync --group examples
+SPRAG_API_KEY=... uv run examples/voice_agent.py
+```
+
+Then open the printed URL in your browser and talk to it.
 
 ## Compatibility
 

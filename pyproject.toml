@@ -22,6 +22,10 @@ pipecat-sprag-stt = { workspace = true }
 pipecat-sprag-tts = { workspace = true }
 
 [dependency-groups]
+examples = [
+    "pipecat-ai[daily,runner,webrtc]>=1.8,<2",
+    "python-dotenv>=1.0",
+]
 dev = [
     "aiohttp>=3.10",
     "httpx>=0.27",
@@ -50,6 +54,8 @@ addopts = "-m 'not live'"
 
 [tool.mypy]
 strict = true
+# pipecat's own methods are largely unannotated
+disallow_untyped_calls = false
 namespace_packages = true
 explicit_package_bases = true
 mypy_path = ["packages/pipecat-sprag-common/src", "packages/pipecat-sprag-llm/src", "packages/pipecat-sprag-stt/src", "packages/pipecat-sprag-tts/src"]
