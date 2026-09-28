@@ -124,9 +124,21 @@ async def test_server_vad_is_requested_when_enabled(
     assert update["audio"]["input"]["turn_detection"]["type"] == "server_vad"
 
 
-def test_model_can_be_overridden() -> None:
-    stt = SpragSTTService(api_key="k", settings=SpragSTTService.Settings(model="rhythm-next"))
-    assert stt._settings.model == "rhythm-next"
+async def test_model_can_be_overridden(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    stt = SpragSTTService(
+        api_key="test-key", base_url=url, settings=SpragSTTService.Settings(model="rhythm-next")
+    )
+    await run_until(
+        stt,
+        [],
+        lambda down, up: bool(server.events("session.update")),
+        params=PipelineParams(audio_in_sample_rate=24000),
+    )
+    update = server.events("session.update")[0]["session"]
+    assert update["audio"]["input"]["transcription"]["model"] == "rhythm-next"
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:

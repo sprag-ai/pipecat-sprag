@@ -8,7 +8,7 @@ from typing import Any
 
 from openai import AsyncStream
 from openai.types.chat import ChatCompletionChunk
-from openai.types.completion_usage import PromptTokensDetails
+from openai.types.completion_usage import CompletionTokensDetails, PromptTokensDetails
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.openai.base_llm import OpenAILLMSettings
 from pipecat.services.openai.llm import OpenAILLMService
@@ -24,9 +24,12 @@ class SpragLLMSettings(OpenAILLMSettings):
 class SpragLLMService(OpenAILLMService):
     """Sprag's Symphony model through Sprag's OpenAI-compatible chat completions API.
 
-    Sprag reports token usage per modality (``usage.input.text.tokens`` and so on)
-    rather than as ``prompt_tokens`` and ``completion_tokens``. This service maps it
-    onto the fields Pipecat reads, so usage metrics and function calls work.
+    Sprag reports usage per billing axis (``usage.input.text.tokens``,
+    ``usage.input.audio.duration`` and so on) rather than as ``prompt_tokens`` and
+    ``completion_tokens``. This service reports the text tokens in the fields Pipecat
+    reads, so usage metrics and function calls work. Media is billed on its own axes,
+    which Pipecat's token metrics have no place for; Sprag's full usage stays on the
+    chunk for anyone who needs it.
     """
 
     Settings = SpragLLMSettings
@@ -96,18 +99,15 @@ def _with_openai_usage(chunk: ChatCompletionChunk) -> ChatCompletionChunk:
     if usage is None or usage.prompt_tokens is not None:
         return chunk
     extra = usage.model_extra or {}
-    inputs: dict[str, Any] = extra.get("input") or {}
-    outputs: dict[str, Any] = extra.get("output") or {}
-    prompt = _tokens(inputs)
-    completion = _tokens(outputs)
-    usage.prompt_tokens = prompt
-    usage.completion_tokens = completion
-    usage.total_tokens = prompt + completion
-    cached = (inputs.get("text") or {}).get("cached_tokens")
-    if cached:
-        usage.prompt_tokens_details = PromptTokensDetails(cached_tokens=cached)
+    text_in: dict[str, Any] = (extra.get("input") or {}).get("text") or {}
+    text_out: dict[str, Any] = (extra.get("output") or {}).get("text") or {}
+    usage.prompt_tokens = text_in.get("tokens") or 0
+    usage.completion_tokens = text_out.get("tokens") or 0
+    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+    if text_in.get("cached_tokens"):
+        usage.prompt_tokens_details = PromptTokensDetails(cached_tokens=text_in["cached_tokens"])
+    if text_out.get("reasoning_tokens"):
+        usage.completion_tokens_details = CompletionTokensDetails(
+            reasoning_tokens=text_out["reasoning_tokens"]
+        )
     return chunk
-
-
-def _tokens(modalities: dict[str, Any]) -> int:
-    return sum(value.get("tokens") or 0 for value in modalities.values() if isinstance(value, dict))

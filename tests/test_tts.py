@@ -73,7 +73,17 @@ class _SpeechServer:
                 else:
                     await ws.send_json({"type": "session.updated", "session": event["session"]})
             elif event["type"] == "conversation.item.create":
-                pending.append(event["item"]["content"][0]["text"])
+                item = event["item"]
+                parts = item.get("content") or []
+                if item.get("type") != "message" or not all(
+                    part.get("type") in ("input_text", "text") for part in parts
+                ):
+                    error = {"code": "unsupported_item", "message": "a speech session accepts text"}
+                    await ws.send_json({"type": "error", "error": error})
+                    continue
+                pending.append("".join(part["text"] for part in parts))
+                await ws.send_json({"type": "conversation.item.added", "item": {"id": "item_1"}})
+                await ws.send_json({"type": "conversation.item.done", "item": {"id": "item_1"}})
             elif event["type"] == "response.create":
                 if active is not None and not active.done():
                     self.overlaps += 1
@@ -87,13 +97,13 @@ class _SpeechServer:
                 self.spoken.append((connection, "".join(pending)))
                 pending.clear()
                 behaviour = self.script.get(index, "ok")
-                active = asyncio.create_task(self._respond(ws, behaviour))
+                active = asyncio.create_task(self._respond(ws, behaviour, self.spoken[-1][1]))
         if active is not None:
             active.cancel()
         self.closed += 1
         return ws
 
-    async def _respond(self, ws: web.WebSocketResponse, behaviour: str) -> None:
+    async def _respond(self, ws: web.WebSocketResponse, behaviour: str, text: str) -> None:
         kind, _, arg = behaviour.partition(":")
         if kind == "stall":
             await asyncio.Event().wait()
@@ -101,6 +111,9 @@ class _SpeechServer:
             await ws.send_json({"type": "error", "error": {"code": arg, "message": arg}})
             return
         await ws.send_json({"type": "response.created", "response": {"id": "resp_1"}})
+        await ws.send_json({"type": "response.output_item.added", "item": {"id": "item_2"}})
+        await ws.send_json({"type": "response.content_part.added", "part": {"type": "audio"}})
+        await ws.send_json({"type": "response.output_audio_transcript.delta", "delta": text})
         if kind == "failed":
             details = {"type": "failed", "error": {"type": "server_error", "code": arg}}
             done = {
@@ -118,7 +131,13 @@ class _SpeechServer:
                 await asyncio.sleep(0.3)
             else:
                 await asyncio.sleep(0.01)
-        await ws.send_json({"type": "response.output_audio.done"})
+        for done in (
+            "response.output_audio.done",
+            "response.output_audio_transcript.done",
+            "response.content_part.done",
+            "response.output_item.done",
+        ):
+            await ws.send_json({"type": done})
         await ws.send_json({"type": "response.done", "response": {"status": "completed"}})
 
     @property
@@ -300,11 +319,80 @@ async def test_a_stalled_response_recovers(speech: Any) -> None:
     assert _audio(down) == pytest.approx(0.1, abs=0.01)
 
 
-def test_defaults_and_overrides() -> None:
-    tts = SpragTTSService(api_key="k")
-    assert (tts._settings.model, tts._settings.voice) == ("chorus-clone", "wade")
-    tts = SpragTTSService(api_key="k", settings=SpragTTSService.Settings(voice="serena"))
-    assert tts._settings.voice == "serena"
+async def test_model_and_voice_can_be_overridden(speech: Any) -> None:
+    server, url = await speech()
+    tts = SpragTTSService(
+        api_key="test-key",
+        url=url,
+        settings=SpragTTSService.Settings(model="chorus-voices", voice="serena"),
+    )
+    await run_until_playing(tts, [TTSSpeakFrame("Hello there.")], _stopped)
+    assert server.handshakes[0].query["model"] == "chorus-voices"
+    assert server.voices == ["serena"]
+
+
+async def _serve_rejecting_first(status: int, server: _SpeechServer) -> tuple[TestServer, str]:
+    attempts = 0
+
+    async def handle(request: web.Request) -> web.StreamResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return web.Response(status=status, text="refused")
+        return await server.handle(request)
+
+    app = web.Application()
+    app.router.add_get("/v1/realtime", handle)
+    test_server = TestServer(app)
+    await test_server.start_server()
+    return test_server, str(test_server.make_url("/v1/realtime")).replace("http://", "ws://")
+
+
+async def test_an_unavailable_server_is_retried_on_the_next_sentence() -> None:
+    server = _SpeechServer()
+    test_server, url = await _serve_rejecting_first(503, server)
+    tts = SpragTTSService(api_key="secret-test-key", url=url)
+    try:
+        down, up = await run_until_playing(
+            tts,
+            [lambda down, up: bool(_errors(up)), TTSSpeakFrame("Hello after the retry.")],
+            _stopped,
+        )
+    finally:
+        await test_server.close()
+
+    assert any("503" in e for e in _errors(up))
+    assert not any("secret-test-key" in e for e in _errors(up))
+    assert server.texts == ["Hello after the retry."]
+    assert _audio(down) == pytest.approx(0.1, abs=0.01)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_rejected_key_stops_the_service(status: int) -> None:
+    server = _SpeechServer()
+    test_server, url = await _serve_rejecting_first(status, server)
+    tts = SpragTTSService(api_key="secret-test-key", url=url)
+    try:
+        down, up = await run_until_playing(
+            tts,
+            [lambda down, up: bool(_errors(up)), TTSSpeakFrame("Never spoken.")],
+            lambda down, up: any(isinstance(f, TTSStoppedFrame) for f in down) or not tts.is_usable,
+        )
+        await asyncio.sleep(0.2)
+    finally:
+        await test_server.close()
+
+    assert any(str(status) in e for e in _errors(up))
+    assert not any("secret-test-key" in e for e in _errors(up))
+    assert not tts.is_usable
+    assert server.handshakes == [] and server.texts == []
+
+
+async def test_blank_input_sends_nothing(speech: Any) -> None:
+    server, url = await speech()
+    tts = SpragTTSService(api_key="test-key", url=url)
+    await run_until_playing(tts, [TTSSpeakFrame("   "), TTSSpeakFrame("Real words.")], _stopped)
+    assert server.texts == ["Real words."]
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:

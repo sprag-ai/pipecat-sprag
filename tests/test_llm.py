@@ -21,11 +21,14 @@ from pipecat_sprag.llm import SpragLLMService
 SPRAG_USAGE = {
     "input": {
         "text": {"tokens": 12, "characters": 0, "cached_tokens": 4, "reasoning_tokens": 0},
-        "audio": {"duration": "0"},
+        "audio": {"duration": "2.5"},
+        "image": {"count": 1, "megapixels": "1.0", "tiles": 4, "tokens": 700},
+        "video": {"duration": "0", "frames": 0, "tokens": 0},
     },
     "output": {
-        "text": {"tokens": 5, "characters": 0, "cached_tokens": 0, "reasoning_tokens": 0},
-        "tools": {"call_count": 1, "tokens": 0},
+        "text": {"tokens": 5, "characters": 0, "cached_tokens": 0, "reasoning_tokens": 2},
+        "audio": {"duration": "0"},
+        "tools": {"call_count": 1, "tokens": 9},
     },
 }
 
@@ -111,10 +114,12 @@ async def test_reply_usage_and_function_call(chat: tuple[_ChatServer, str]) -> N
         if isinstance(d, LLMUsageMetricsData)
     ]
     assert usage, "no usage metrics were reported"
+    # text tokens only: image, audio, and tool usage bill on their own axes
     assert usage[0].prompt_tokens == 12
     assert usage[0].completion_tokens == 5
     assert usage[0].total_tokens == 17
     assert usage[0].cache_read_input_tokens == 4
+    assert usage[0].reasoning_tokens == 2
 
     request, body = server.requests[0]
     assert request.headers["Authorization"] == "Bearer test-key"
@@ -123,9 +128,16 @@ async def test_reply_usage_and_function_call(chat: tuple[_ChatServer, str]) -> N
     assert body["stream"] is True
 
 
-def test_model_can_be_overridden() -> None:
-    llm = SpragLLMService(api_key="k", settings=SpragLLMService.Settings(model="symphony-notes"))
-    assert llm._settings.model == "symphony-notes"
+async def test_model_can_be_overridden(chat: tuple[_ChatServer, str]) -> None:
+    server, base_url = chat
+    llm = SpragLLMService(
+        api_key="test-key",
+        base_url=base_url,
+        settings=SpragLLMService.Settings(model="symphony-notes"),
+    )
+    context = LLMContext(messages=[{"role": "user", "content": "Hello"}])
+    await run_test(llm, frames_to_send=[LLMContextFrame(context=context)])
+    assert server.requests[0][1]["model"] == "symphony-notes"
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
