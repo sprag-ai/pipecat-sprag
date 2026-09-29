@@ -6,7 +6,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     EndFrame,
     Frame,
-    TTSStartedFrame,
+    TTSAudioRawFrame,
     TTSStoppedFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -31,9 +31,10 @@ async def run_until(
     An entry in ``frames`` may also be a condition on the output so far; sending pauses
     until it holds, which lets a test interrupt at a chosen moment.
 
-    With ``play_audio``, the helper stands in for an output transport: it answers each
-    ``TTSStartedFrame`` and ``TTSStoppedFrame`` with the bot-speaking frames a transport
-    sends, which TTS services wait on to resume processing after a turn.
+    With ``play_audio``, the helper stands in for an output transport: like one, it
+    reports the bot speaking once a turn's audio arrives and stopped when that turn ends,
+    which TTS services wait on to resume processing after a turn. A turn without audio
+    is never reported as speech.
 
     Unlike ``run_test``, the pipeline stays up until ``done`` holds, which services that
     answer asynchronously (websocket STT and TTS) need.
@@ -62,6 +63,7 @@ async def run_until(
 
     down: list[Frame] = []
     up: list[Frame] = []
+    speaking: list[bool] = []
 
     async def drive() -> None:
         await asyncio.wait_for(started.wait(), timeout=5)
@@ -74,6 +76,8 @@ async def run_until(
                 await collect_until(entry)
         await collect_until(done)
         await worker.queue_frame(EndFrame())
+        # a paused TTS only reaches the EndFrame once playback is reported finished
+        await collect_until(lambda down, up: running.done())
 
     async def collect_until(condition: Callable[[list[Frame], list[Frame]], bool]) -> None:
         while not condition(down, up):
@@ -84,17 +88,21 @@ async def run_until(
             except TimeoutError:
                 continue
             down.append(frame)
-            if play_audio and isinstance(frame, TTSStartedFrame):
-                await worker.queue_frame(BotStartedSpeakingFrame())
-            elif play_audio and isinstance(frame, TTSStoppedFrame):
-                await worker.queue_frame(BotStoppedSpeakingFrame())
+            if not play_audio:
+                continue
+            if isinstance(frame, TTSAudioRawFrame) and not speaking:
+                speaking.append(True)
+                await sink.push_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+            elif isinstance(frame, TTSStoppedFrame) and speaking:
+                speaking.clear()
+                await sink.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
 
     runner = WorkerRunner()
     await runner.add_workers(worker)
     running = asyncio.create_task(runner.run())
     try:
         await asyncio.wait_for(drive(), timeout=timeout)
-        await asyncio.wait_for(running, timeout=5)
+        await running
     finally:
         if not running.done():
             await worker.cancel()
