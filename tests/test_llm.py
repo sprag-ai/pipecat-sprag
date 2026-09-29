@@ -49,6 +49,7 @@ class _ChatServer:
 
     def __init__(self) -> None:
         self.requests: list[tuple[web.Request, dict[str, Any]]] = []
+        self.usage: dict[str, Any] = SPRAG_USAGE
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         body = await request.json()
@@ -58,7 +59,7 @@ class _ChatServer:
             call = {"index": 0, "id": "call_1", "type": "function"}
             call["function"] = {"name": "get_weather", "arguments": '{"city": "Paris"}'}
             chunks.append(_chunk(choices=[{"index": 0, "delta": {"tool_calls": [call]}}]))
-        chunks.append(_chunk(usage=SPRAG_USAGE))
+        chunks.append(_chunk(usage=self.usage))
         text = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
         return web.Response(text=text, content_type="text/event-stream")
 
@@ -138,6 +139,50 @@ async def test_model_can_be_overridden(chat: tuple[_ChatServer, str]) -> None:
     context = LLMContext(messages=[{"role": "user", "content": "Hello"}])
     await run_test(llm, frames_to_send=[LLMContextFrame(context=context)])
     assert server.requests[0][1]["model"] == "symphony-notes"
+
+
+async def test_extra_headers_are_sent_with_attribution(chat: tuple[_ChatServer, str]) -> None:
+    server, base_url = chat
+    llm = SpragLLMService(api_key="test-key", base_url=base_url, default_headers={"X-Trace": "abc"})
+    context = LLMContext(messages=[{"role": "user", "content": "Hello"}])
+    await run_test(llm, frames_to_send=[LLMContextFrame(context=context)])
+    headers = server.requests[0][0].headers
+    assert headers["X-Trace"] == "abc"
+    assert headers["X-Sprag-Integration"] == ATTRIBUTION_HEADERS["X-Sprag-Integration"]
+
+
+async def _reported_usage(server: _ChatServer, base_url: str, usage: dict[str, Any]) -> Any:
+    server.usage = usage
+    llm = SpragLLMService(api_key="test-key", base_url=base_url)
+    context = LLMContext(messages=[{"role": "user", "content": "Hello"}])
+    down, up = await run_test(
+        llm,
+        frames_to_send=[LLMContextFrame(context=context)],
+        pipeline_params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+    )
+    assert not [f for f in (*down, *up) if isinstance(f, ErrorFrame)]
+    usage_metrics = [
+        d.value
+        for f in down
+        if isinstance(f, MetricsFrame)
+        for d in f.data
+        if isinstance(d, LLMUsageMetricsData)
+    ]
+    return usage_metrics[0] if usage_metrics else None
+
+
+async def test_openai_shaped_usage_is_left_alone(chat: tuple[_ChatServer, str]) -> None:
+    usage = await _reported_usage(
+        *chat, {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    )
+    assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (3, 2, 5)
+
+
+async def test_usage_without_text_counts_no_tokens(chat: tuple[_ChatServer, str]) -> None:
+    usage = await _reported_usage(*chat, {"input": {"audio": {"duration": "1.0"}}})
+    if usage is not None:
+        assert (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens) == (0, 0, 0)
+        assert not usage.cache_read_input_tokens and not usage.reasoning_tokens
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:

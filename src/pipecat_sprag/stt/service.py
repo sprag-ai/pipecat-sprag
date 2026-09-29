@@ -20,6 +20,9 @@ class SpragSTTService(OpenAIRealtimeSTTService):
 
     By default the pipeline's own VAD decides when a turn ends. Pass
     ``turn_detection={"type": "server_vad"}`` to have Sprag detect turns instead.
+
+    Unlike the LLM and TTS services, it sends no ``X-Sprag-Integration`` header: Pipecat's
+    realtime STT connects with a fixed set of headers.
     """
 
     Settings = SpragSTTSettings

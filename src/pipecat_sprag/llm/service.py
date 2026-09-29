@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +40,7 @@ class SpragLLMService(OpenAILLMService):
         *,
         api_key: str | None = None,
         base_url: str = SPRAG_BASE_URL,
+        default_headers: Mapping[str, str] | None = None,
         settings: SpragLLMSettings | None = None,
         **kwargs: Any,
     ) -> None:
@@ -49,6 +50,7 @@ class SpragLLMService(OpenAILLMService):
             api_key: Your Sprag API key. Defaults to the ``SPRAG_API_KEY`` environment
                 variable.
             base_url: The Sprag API base URL.
+            default_headers: Extra headers sent with every request.
             settings: Runtime-updatable settings. The model defaults to ``symphony``.
             **kwargs: Additional arguments passed to OpenAILLMService.
         """
@@ -58,7 +60,7 @@ class SpragLLMService(OpenAILLMService):
         super().__init__(
             api_key=resolve_api_key(api_key),
             base_url=base_url,
-            default_headers=ATTRIBUTION_HEADERS,
+            default_headers={**ATTRIBUTION_HEADERS, **(default_headers or {})},
             settings=default_settings,
             **kwargs,
         )

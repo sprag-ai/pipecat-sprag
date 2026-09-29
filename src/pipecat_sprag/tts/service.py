@@ -8,11 +8,9 @@ import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from pipecat.frames.frames import (
-    CancelFrame,
-    EndFrame,
     ErrorFrame,
     Frame,
     StartFrame,
@@ -21,11 +19,14 @@ from pipecat.frames.frames import (
 )
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import InterruptibleTTSService
+from websockets.asyncio.client import ClientConnection
 from websockets.protocol import State
 
 from pipecat_sprag.common import ATTRIBUTION_HEADERS, SPRAG_REALTIME_URL, resolve_api_key
 
 SAMPLE_RATE = 24000
+# Pipecat's default wait for audio between frames of a turn
+FIRST_AUDIO_TIMEOUT = 3.0
 
 
 @dataclass
@@ -60,8 +61,8 @@ class SpragTTSService(InterruptibleTTSService):
             api_key: Your Sprag API key. Defaults to the ``SPRAG_API_KEY`` environment
                 variable.
             url: The Sprag realtime WebSocket URL.
-            response_timeout: Seconds a sentence may wait for the previous response to
-                finish, and for the session to be configured.
+            response_timeout: Seconds a response may go without sending audio before it
+                counts as stalled, and seconds the session may take to be configured.
             settings: Runtime-updatable settings. Defaults to the ``chorus-clone`` model
                 and the ``wade`` voice.
             **kwargs: Additional arguments passed to InterruptibleTTSService.
@@ -69,6 +70,9 @@ class SpragTTSService(InterruptibleTTSService):
         default_settings = self.Settings(model="chorus-clone", voice="wade", language=None)
         if settings is not None:
             default_settings.apply_update(settings)
+        # a turn's audio context must outlast the longest gap between two of its responses:
+        # a stall, the reconnect that replaces it, and the next response's first audio
+        kwargs.setdefault("stop_frame_timeout_s", 2 * response_timeout + FIRST_AUDIO_TIMEOUT)
         super().__init__(
             push_start_frame=True,
             push_stop_frames=True,
@@ -81,10 +85,12 @@ class SpragTTSService(InterruptibleTTSService):
         self._url = url
         self._response_timeout = response_timeout
         self._receive_task: asyncio.Task[None] | None = None
+        self._stall_watch: asyncio.Task[None] | None = None
         # the session speaks one response at a time: set while none is in progress
         self._idle = asyncio.Event()
         self._idle.set()
         self._response_context: str | None = None
+        self._last_activity = 0.0
         self._flushed_context: str | None = None
         # run_tts and the receive loop's reconnect may both reach for a new socket
         self._connect_lock = asyncio.Lock()
@@ -106,24 +112,6 @@ class SpragTTSService(InterruptibleTTSService):
         await super().start(frame)
         await self._connect()
 
-    async def stop(self, frame: EndFrame) -> None:
-        """Disconnect when the pipeline ends.
-
-        Args:
-            frame: The end frame.
-        """
-        await super().stop(frame)
-        await self._disconnect()
-
-    async def cancel(self, frame: CancelFrame) -> None:
-        """Disconnect when the pipeline is cancelled.
-
-        Args:
-            frame: The cancel frame.
-        """
-        await super().cancel(frame)
-        await self._disconnect()
-
     async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
         changed = await super()._update_settings(delta)
         if changed:
@@ -135,10 +123,13 @@ class SpragTTSService(InterruptibleTTSService):
     async def _connect(self) -> None:
         await super()._connect()
         await self._connect_websocket()
-        if self._websocket and not self._receive_task:
+        if self._websocket and (not self._receive_task or self._receive_task.done()):
             self._receive_task = self.create_task(self._receive_task_handler(self._report_error))
 
     async def _disconnect(self) -> None:
+        if self._stall_watch and self._stall_watch is not asyncio.current_task():
+            await self.cancel_task(self._stall_watch)
+        self._stall_watch = None
         await super()._disconnect()
         if self._receive_task:
             await self.cancel_task(self._receive_task, timeout=1.0)
@@ -153,28 +144,34 @@ class SpragTTSService(InterruptibleTTSService):
         if self._websocket and self._websocket.state is State.OPEN:
             return
         self._reset_response_state()
-        url = f"{self._url}?{urlencode({'model': self._settings.model})}"
+        self._websocket = None
+        parts = urlsplit(self._url)
+        query = "&".join(q for q in (parts.query, urlencode({"model": self._settings.model})) if q)
+        websocket: ClientConnection | None = None
         try:
-            self._websocket = await self._websocket_connect(
-                url,
+            websocket = await self._websocket_connect(
+                urlunsplit(parts._replace(query=query)),
                 additional_headers={
                     "Authorization": f"Bearer {self._api_key}",
                     **ATTRIBUTION_HEADERS,
                 },
             )
-            await asyncio.wait_for(self._configure_session(), timeout=self._response_timeout)
-            await self._call_event_handler("on_connected")
+            await asyncio.wait_for(
+                self._configure_session(websocket), timeout=self._response_timeout
+            )
         except Exception as e:
             await self.push_error(error_msg=f"Error connecting to Sprag TTS: {e}", exception=e)
-            if self._websocket:
-                await self._websocket.close()
-            self._websocket = None
+            if websocket:
+                await websocket.close()
+            return
+        # run_tts may send as soon as the socket is visible, so it becomes visible configured
+        self._websocket = websocket
+        await self._call_event_handler("on_connected")
 
-    async def _configure_session(self) -> None:
-        assert self._websocket is not None
+    async def _configure_session(self, websocket: ClientConnection) -> None:
         session = {"type": "realtime", "audio": {"output": {"voice": self._settings.voice}}}
-        await self._websocket.send(json.dumps({"type": "session.update", "session": session}))
-        async for message in self._websocket:
+        await websocket.send(json.dumps({"type": "session.update", "session": session}))
+        async for message in websocket:
             event = json.loads(message)
             if event.get("type") == "session.updated":
                 return
@@ -208,6 +205,7 @@ class SpragTTSService(InterruptibleTTSService):
         """
         if context_id and not self._idle.is_set() and self._response_context == context_id:
             self._flushed_context = context_id
+            self._stall_watch = self.create_task(self._end_turn_if_stalled(context_id))
         elif context_id:
             await self._close_context(context_id)
 
@@ -215,15 +213,6 @@ class SpragTTSService(InterruptibleTTSService):
         if self.audio_context_available(context_id):
             await self.append_to_audio_context(context_id, TTSStoppedFrame(context_id=context_id))
             await self.remove_audio_context(context_id)
-
-    async def on_audio_context_interrupted(self, context_id: str) -> None:
-        """Stop metrics when the caller interrupts.
-
-        Args:
-            context_id: The interrupted audio context.
-        """
-        await self.stop_all_metrics()
-        await super().on_audio_context_interrupted(context_id)
 
     async def _receive_messages(self) -> None:
         assert self._websocket is not None
@@ -243,6 +232,7 @@ class SpragTTSService(InterruptibleTTSService):
         context_id = self._response_context
         if context_id is None:
             return
+        self._last_activity = asyncio.get_running_loop().time()
         await self.stop_ttfb_metrics()
         frame = TTSAudioRawFrame(
             audio=base64.b64decode(event["delta"]),
@@ -289,9 +279,7 @@ class SpragTTSService(InterruptibleTTSService):
         if not self._websocket:
             yield ErrorFrame(error="Sprag TTS is not connected")
             return
-        try:
-            await asyncio.wait_for(self._idle.wait(), timeout=self._response_timeout)
-        except TimeoutError:
+        if not await self._wait_until_idle():
             # the stalled response holds the session, so this sentence goes out on a new one
             yield ErrorFrame(error="Sprag TTS: the previous response did not finish")
             await self._disconnect()
@@ -304,6 +292,7 @@ class SpragTTSService(InterruptibleTTSService):
             return
         self._idle.clear()
         self._response_context = context_id
+        self._last_activity = asyncio.get_running_loop().time()
         item = {
             "type": "message",
             "role": "user",
@@ -320,6 +309,27 @@ class SpragTTSService(InterruptibleTTSService):
             return
         await self.start_tts_usage_metrics(text)
         yield None
+
+    async def _end_turn_if_stalled(self, context_id: str) -> None:
+        if await self._wait_until_idle() or self._flushed_context != context_id:
+            return
+        await self.push_error(error_msg="Sprag TTS: the last response did not finish")
+        # the disconnect ends the flushed turn, and the stalled response holds the session
+        await self._disconnect()
+        await self._connect()
+
+    async def _wait_until_idle(self) -> bool:
+        """Wait for the active response to finish, as long as it keeps sending audio."""
+        loop = asyncio.get_running_loop()
+        while not self._idle.is_set():
+            remaining = self._last_activity + self._response_timeout - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._idle.wait(), timeout=remaining)
+            except TimeoutError:
+                pass
+        return True
 
 
 def _error_message(event: dict[str, Any]) -> str:
