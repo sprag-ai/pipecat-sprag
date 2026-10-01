@@ -80,8 +80,6 @@ class SpragLLMService(OpenAILLMService):
 
 
 class _OpenAIUsageStream:
-    """Wraps a chunk stream so each chunk's usage carries OpenAI's token fields."""
-
     def __init__(self, stream: AsyncStream[ChatCompletionChunk]) -> None:
         self._stream = stream
 

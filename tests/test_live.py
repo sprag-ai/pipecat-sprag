@@ -90,7 +90,7 @@ async def test_llm_calls_a_tool_and_reports_usage() -> None:
 
 
 def _speech_pcm(text: str) -> bytes:
-    """Synthesize ``text`` with Chorus over REST, as 24 kHz PCM, to feed the STT."""
+    """Chorus speech for ``text`` as 24 kHz PCM."""
     response = httpx.post(
         f"{BASE_URL}/audio/speech",
         headers={"Authorization": f"Bearer {os.environ['SPRAG_API_KEY']}"},

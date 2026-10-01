@@ -17,7 +17,6 @@ from pipecat.tests.utils import run_test
 from pipecat_sprag.common import ATTRIBUTION_HEADERS
 from pipecat_sprag.llm import SpragLLMService
 
-# Sprag reports usage per modality, not as prompt_tokens/completion_tokens
 SPRAG_USAGE = {
     "input": {
         "text": {"tokens": 12, "characters": 0, "cached_tokens": 4, "reasoning_tokens": 0},
@@ -45,8 +44,6 @@ def _chunk(**fields: Any) -> dict[str, Any]:
 
 
 class _ChatServer:
-    """Streams a Symphony reply: text, then a tool call on the first request, then usage."""
-
     def __init__(self) -> None:
         self.requests: list[tuple[web.Request, dict[str, Any]]] = []
         self.usage: dict[str, Any] = SPRAG_USAGE
@@ -115,7 +112,7 @@ async def test_reply_usage_and_function_call(chat: tuple[_ChatServer, str]) -> N
         if isinstance(d, LLMUsageMetricsData)
     ]
     assert usage, "no usage metrics were reported"
-    # text tokens only: image, audio, and tool usage bill on their own axes
+    # text tokens only: other modalities bill on their own axes
     assert usage[0].prompt_tokens == 12
     assert usage[0].completion_tokens == 5
     assert usage[0].total_tokens == 17

@@ -23,8 +23,6 @@ SILENCE = b"\x00\x00" * 480  # 20 ms at 24 kHz
 
 
 class _TranscriptionServer:
-    """Speaks the realtime transcription events Sprag's gateway sends."""
-
     def __init__(self, transcript: str = "hello there") -> None:
         self.transcript = transcript
         self.handshakes: list[web.Request] = []

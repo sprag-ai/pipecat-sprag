@@ -64,7 +64,6 @@ class _SpeechServer:
         self.handshakes: list[web.Request] = []
         self.voices: list[str] = []
         self.asked = 0
-        # (connection, text) of each response as it starts
         self.spoken: list[tuple[int, str]] = []
         self.metadata: list[dict[str, str]] = []
         self.most_waiting = 0
@@ -246,14 +245,12 @@ async def test_sends_each_sentence_without_waiting_for_the_last(speech: Any) -> 
     )
 
     assert _errors(up) == []
-    # the second sentence was queued while the first was still speaking
     assert server.most_waiting >= 1
     assert server.texts == [
         "It is lovely to meet you today.",
         "How has your week been going so far?",
     ]
     assert _audio(down) == pytest.approx(0.2, abs=0.01)
-    # every response is tagged with the turn its audio belongs to
     contexts = {f.context_id for f in down if isinstance(f, TTSAudioRawFrame)}
     assert [m["context_id"] for m in server.metadata] == [*contexts] * 2
     kinds = [
@@ -315,7 +312,6 @@ async def test_interruption_replaces_the_connection(speech: Any) -> None:
         ),
     )
     assert _errors(up) == []
-    # the interrupted turn's queued sentence is not sent again on the new session
     assert server.spoken == [(0, "A sentence the caller talks over."), (1, "The next turn.")]
 
 
@@ -576,7 +572,7 @@ async def test_a_dropped_connection_moves_the_turn_to_a_new_one(speech: Any) -> 
     ]
     assert [connection for connection, _ in server.spoken] == [0, 1]
     assert len(server.handshakes) == 2
-    # half of the first sentence, then all of the second, sent again on the new session
+    # half of the first sentence, then all of the second
     assert _audio(down) == pytest.approx(0.15, abs=0.01)
 
 

@@ -49,7 +49,7 @@ class SpragSTTService(OpenAIRealtimeSTTService):
             settings: Runtime-updatable settings. The model defaults to ``rhythm``.
             **kwargs: Additional arguments passed to OpenAIRealtimeSTTService.
         """
-        # Rhythm takes no language parameter, so none is sent
+        # Rhythm takes no language parameter
         default_settings = self.Settings(model="rhythm", language=None)
         if settings is not None:
             default_settings.apply_update(settings)

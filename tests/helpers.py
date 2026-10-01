@@ -33,11 +33,7 @@ async def run_until(
 
     With ``play_audio``, the helper stands in for an output transport: like one, it
     reports the bot speaking once a turn's audio arrives and stopped when that turn ends,
-    which TTS services wait on to resume processing after a turn. A turn without audio
-    is never reported as speech.
-
-    Unlike ``run_test``, the pipeline stays up until ``done`` holds, which services that
-    answer asynchronously (websocket STT and TTS) need.
+    which TTS services wait on to resume processing after a turn.
 
     Returns:
         The downstream and upstream frames received.

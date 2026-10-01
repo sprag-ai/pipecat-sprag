@@ -82,12 +82,8 @@ class SpragTTSService(InterruptibleTTSService):
         self._url = url
         self._connect_timeout = connect_timeout
         self._receive_task: asyncio.Task[None] | None = None
-        # responses sent and not yet finished, per turn
         self._unfinished: Counter[str] = Counter()
-        # turns whose text has all been sent, closed once their last response finishes
         self._flushed: set[str] = set()
-        # sentences whose response has not started, by response.create event id: a refusal
-        # names one, and the ones a dropped connection strands are sent again
         self._unstarted: dict[str, tuple[str, str]] = {}
         self._resend: list[tuple[str, str]] = []
         self._speaking_context: str | None = None
@@ -114,7 +110,7 @@ class SpragTTSService(InterruptibleTTSService):
     async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:  # type: ignore[override]
         changed = await super()._update_settings(delta)
         if changed:
-            # the model and voice belong to the session, so a change needs a new one
+            # model and voice are fixed for the life of a session
             await self._disconnect()
             await self._connect()
         return changed
@@ -142,7 +138,7 @@ class SpragTTSService(InterruptibleTTSService):
         self._websocket = None
         parts = urlsplit(self._url)
         query = "&".join(q for q in (parts.query, urlencode({"model": self._settings.model})) if q)
-        # an interrupted turn's stranded sentences are dropped; the rest are sent again
+        # an interrupted turn's stranded sentences are dropped
         stranded, self._resend = self._resend, []
         resend = []
         for context_id, text in stranded:
@@ -169,7 +165,6 @@ class SpragTTSService(InterruptibleTTSService):
             await self.push_error(error_msg=f"Error connecting to Sprag TTS: {e}", exception=e)
             if websocket:
                 await websocket.close()
-            # none of them reached a session that will answer, so the next one sends them all
             self._unstarted.clear()
             self._resend = resend
             return
@@ -194,7 +189,7 @@ class SpragTTSService(InterruptibleTTSService):
                 await self._websocket.close()
         finally:
             self._websocket = None
-            # the response being spoken is lost; the ones still queued go out on the next session
+            # the response being spoken is lost; queued ones go out on the next session
             self._resend += self._unstarted.values()
             self._unstarted.clear()
             speaking, self._speaking_context = self._speaking_context, None
@@ -273,7 +268,7 @@ class SpragTTSService(InterruptibleTTSService):
 
     async def _on_error(self, event: dict[str, Any]) -> None:
         await self.push_error(error_msg=_error_message(event))
-        # a refused response.create opens no response, so its turn stops waiting on it
+        # a refused response.create opens no response
         refused = self._unstarted.pop((event.get("error") or {}).get("event_id") or "", None)
         if refused is not None:
             await self._finish_response(refused[0])
@@ -313,7 +308,6 @@ class SpragTTSService(InterruptibleTTSService):
         yield None
 
     async def _request(self, websocket: ClientConnection, context_id: str, text: str) -> None:
-        """Ask the session to speak ``text`` as a response tagged with its turn."""
         item = {
             "type": "message",
             "role": "user",
