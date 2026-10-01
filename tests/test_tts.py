@@ -24,6 +24,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import TTFBMetricsData, TTSUsageMetricsData
 from pipecat.pipeline.worker import PipelineParams
+from websockets.protocol import State
 
 from pipecat_sprag.common import ATTRIBUTION_HEADERS
 from pipecat_sprag.tts import SpragTTSService
@@ -623,6 +624,70 @@ async def test_refused_reconnects_do_not_hang_the_pipeline(speech: Any) -> None:
     )
     assert _errors(up)
     assert server.texts == ["The server drops this."]
+
+
+async def test_an_interruption_during_a_reconnect_closes_the_unconfigured_socket(
+    speech: Any,
+) -> None:
+    server, url = await speech(script={0: "drop:1011"}, configure={1: "late"})
+    tts = SpragTTSService(api_key="test-key", url=url)
+    await run_until_playing(
+        tts,
+        [
+            *_turn("The server drops this. ", "This waits for the reconnect."),
+            # the receive loop's reconnect is waiting on session.updated
+            lambda down, up: len(server.handshakes) == 2,
+            InterruptionFrame(),
+            TTSSpeakFrame("After the interruption."),
+        ],
+        lambda down, up: "After the interruption." in server.texts and _stopped(down, up),
+    )
+    await asyncio.sleep(0.5)
+    # the pipeline has shut down, so a socket still open was abandoned mid-configuration
+    assert len(server.handshakes) == 3 and server.open == []
+
+
+class _DroppingSocket:
+    """An open socket that closes during a send; ``noticed`` handles the drop before it fails."""
+
+    def __init__(self, tts: SpragTTSService, noticed: bool) -> None:
+        self.tts = tts
+        self.noticed = noticed
+        self.state = State.OPEN
+
+    async def send(self, message: str) -> None:
+        self.state = State.CLOSED
+        if self.noticed:
+            await self.tts._strand()
+        raise ConnectionError("socket closed mid-send")
+
+
+@pytest.mark.parametrize("noticed", [True, False])
+async def test_a_send_lost_to_a_drop_is_queued_once_for_the_next_session(noticed: bool) -> None:
+    tts = SpragTTSService(api_key="test-key", url="ws://unused")
+    tts._websocket = _DroppingSocket(tts, noticed)  # type: ignore[assignment]
+    frames = [frame async for frame in tts.run_tts("Lost to the drop.", "turn")]
+    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert tts._resend == [("turn", "Lost to the drop.")]
+    assert tts._unstarted == {} and tts._unfinished["turn"] == 1
+
+
+async def test_a_socket_closed_without_a_reconnect_strands_nothing(speech: Any) -> None:
+    server, url = await speech(script={0: "hang"})
+    tts = SpragTTSService(api_key="test-key", url=url, reconnect_on_error=False)
+    await run_until_playing(
+        tts,
+        [
+            *_turn("This one hangs. ", "This one waits behind it."),
+            lambda down, up: len(server.texts) == 1 and bool(server.open),
+            lambda down, up: bool(asyncio.ensure_future(server.close_idle(code=1000))),
+            _stopped_times(1),
+            TTSSpeakFrame("A later turn."),
+        ],
+        _stopped_times(2),
+    )
+    assert server.texts[-1] == "A later turn."
+    assert tts._unstarted == {} and tts._resend == []
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
