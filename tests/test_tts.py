@@ -36,16 +36,16 @@ async def run_until_playing(*args: Any, **kwargs: Any) -> tuple[list[Frame], lis
 
 
 class _SpeechServer:
-    """Serves Sprag's realtime speech session, including its one-response-at-a-time rule.
+    """Serves Sprag's realtime speech session: responses queue and are spoken in order.
 
-    ``script`` maps a response's index, counted across connections, to a behaviour:
-    ``ok`` (the default), ``slow`` (a pause mid-response), ``long`` (five deltas 0.2 s
-    apart), ``hang`` (one audio delta, then nothing), ``drop:<code>`` (one audio delta,
-    then the server closes the socket), ``stall`` (no reply), ``error:<code>``, or
-    ``failed:<code>``. ``configure`` maps a connection's index to how it answers
-    ``session.update``: ``ok`` (the default), ``late`` (after 0.3 s), ``close``, or
-    ``ignore``. With ``refuse_reconnects``, every handshake after the first is answered
-    with a 503.
+    ``script`` maps a response's index, counted across connections in the order they
+    were asked for, to a behaviour: ``ok`` (the default), ``slow`` (a pause mid-response),
+    ``hang`` (one audio delta, then nothing), ``drop:<code>`` (one audio delta, then the
+    server closes the socket), ``refuse:<code>`` (refused with an error naming the
+    request, its text left buffered), or ``failed:<code>``. ``configure`` maps a
+    connection's index to how it answers ``session.update``: ``ok`` (the default),
+    ``late`` (after 0.3 s), ``close``, or ``ignore``. With ``refuse_reconnects``, every
+    handshake after the first is answered with a 503.
     """
 
     def __init__(
@@ -63,8 +63,11 @@ class _SpeechServer:
         self.open: list[web.WebSocketResponse] = []
         self.handshakes: list[web.Request] = []
         self.voices: list[str] = []
+        self.asked = 0
+        # (connection, text) of each response as it starts
         self.spoken: list[tuple[int, str]] = []
-        self.overlaps = 0
+        self.metadata: list[dict[str, str]] = []
+        self.most_waiting = 0
         self.unconfigured_sends = 0
         self.closed = 0
 
@@ -77,8 +80,8 @@ class _SpeechServer:
         await ws.prepare(request)
         self.open.append(ws)
         await ws.send_json({"type": "session.created", "session": {}})
-        pending: list[str] = []
-        active: asyncio.Task[None] | None = None
+        buffered: list[str] = []
+        waiting: asyncio.Queue[tuple[str, str, dict[str, str]]] = asyncio.Queue()
         configured = asyncio.Event()
 
         async def answer_update(session: dict[str, Any]) -> None:
@@ -93,6 +96,14 @@ class _SpeechServer:
             await ws.send_json({"type": "session.updated", "session": session})
             configured.set()
 
+        async def speak_in_order() -> None:
+            while True:
+                behaviour, text, metadata = await waiting.get()
+                self.spoken.append((connection, text))
+                self.metadata.append(metadata)
+                await self._respond(ws, behaviour, text, metadata)
+
+        speaker = asyncio.create_task(speak_in_order())
         updating: asyncio.Task[None] | None = None
         async for msg in ws:
             if msg.type is not WSMsgType.TEXT:
@@ -117,24 +128,22 @@ class _SpeechServer:
                     error = {"code": "unsupported_item", "message": "a speech session accepts text"}
                     await ws.send_json({"type": "error", "error": error})
                     continue
-                pending.append("".join(part["text"] for part in parts))
+                buffered.append("".join(part["text"] for part in parts))
                 await ws.send_json({"type": "conversation.item.added", "item": {"id": "item_1"}})
                 await ws.send_json({"type": "conversation.item.done", "item": {"id": "item_1"}})
             elif event["type"] == "response.create":
-                if active is not None and not active.done():
-                    self.overlaps += 1
-                    error = {
-                        "code": "conversation_already_has_active_response",
-                        "message": "a response is already in progress",
-                    }
+                behaviour = self.script.get(self.asked, "ok")
+                self.asked += 1
+                kind, _, code = behaviour.partition(":")
+                if kind == "refuse":
+                    error = {"code": code, "message": code, "event_id": event.get("event_id")}
                     await ws.send_json({"type": "error", "error": error})
                     continue
-                index = len(self.spoken)
-                self.spoken.append((connection, "".join(pending)))
-                pending.clear()
-                behaviour = self.script.get(index, "ok")
-                active = asyncio.create_task(self._respond(ws, behaviour, self.spoken[-1][1]))
-        for task in (active, updating):
+                metadata = (event.get("response") or {}).get("metadata") or {}
+                waiting.put_nowait((behaviour, "".join(buffered), metadata))
+                buffered.clear()
+                self.most_waiting = max(self.most_waiting, waiting.qsize())
+        for task in (speaker, updating):
             if task is not None:
                 task.cancel()
         self.open.remove(ws)
@@ -145,41 +154,30 @@ class _SpeechServer:
         for ws in list(self.open):
             await ws.close(code=code)
 
-    async def _respond(self, ws: web.WebSocketResponse, behaviour: str, text: str) -> None:
+    async def _respond(
+        self, ws: web.WebSocketResponse, behaviour: str, text: str, metadata: dict[str, str]
+    ) -> None:
         kind, _, arg = behaviour.partition(":")
-        if kind == "stall":
-            await asyncio.Event().wait()
-        if kind == "error":
-            await ws.send_json({"type": "error", "error": {"code": arg, "message": arg}})
-            return
-        await ws.send_json({"type": "response.created", "response": {"id": "resp_1"}})
+        response = {"id": "resp_1", "metadata": metadata}
+        await ws.send_json({"type": "response.created", "response": response})
         await ws.send_json({"type": "response.output_item.added", "item": {"id": "item_2"}})
         await ws.send_json({"type": "response.content_part.added", "part": {"type": "audio"}})
         await ws.send_json({"type": "response.output_audio_transcript.delta", "delta": text})
         if kind == "failed":
             details = {"type": "failed", "error": {"type": "server_error", "code": arg}}
-            done = {
-                "type": "response.done",
-                "response": {"status": "failed", "status_details": details},
-            }
-            await ws.send_json(done)
+            done = {**response, "status": "failed", "status_details": details}
+            await ws.send_json({"type": "response.done", "response": done})
             return
-        pieces = 5 if kind == "long" else 2
-        size = len(PCM) // pieces
-        for i in range(pieces):
+        size = len(PCM) // 2
+        for i in range(2):
             delta = base64.b64encode(PCM[i * size : (i + 1) * size]).decode()
             await ws.send_json({"type": "response.output_audio.delta", "delta": delta})
             if kind == "hang":
                 await asyncio.Event().wait()
             if kind == "drop":
                 await ws.close(code=int(arg))
-                return
-            if kind == "slow" and i == 0:
-                await asyncio.sleep(0.3)
-            elif kind == "long":
-                await asyncio.sleep(0.2)
-            else:
-                await asyncio.sleep(0.01)
+                await asyncio.Event().wait()
+            await asyncio.sleep(0.3 if kind == "slow" and i == 0 else 0.01)
         for done in (
             "response.output_audio.done",
             "response.output_audio_transcript.done",
@@ -187,7 +185,8 @@ class _SpeechServer:
             "response.output_item.done",
         ):
             await ws.send_json({"type": done})
-        await ws.send_json({"type": "response.done", "response": {"status": "completed"}})
+        completed = {**response, "status": "completed"}
+        await ws.send_json({"type": "response.done", "response": completed})
 
     @property
     def texts(self) -> list[str]:
@@ -237,7 +236,7 @@ def _errors(up: list[Frame]) -> list[str]:
     return [f.error for f in up if isinstance(f, ErrorFrame)]
 
 
-async def test_speaks_each_sentence_one_response_at_a_time(speech: Any) -> None:
+async def test_sends_each_sentence_without_waiting_for_the_last(speech: Any) -> None:
     server, url = await speech(script={0: "slow"})
     tts = SpragTTSService(api_key="test-key", url=url)
     down, up = await run_until_playing(
@@ -247,12 +246,16 @@ async def test_speaks_each_sentence_one_response_at_a_time(speech: Any) -> None:
     )
 
     assert _errors(up) == []
-    assert server.overlaps == 0
+    # the second sentence was queued while the first was still speaking
+    assert server.most_waiting >= 1
     assert server.texts == [
         "It is lovely to meet you today.",
         "How has your week been going so far?",
     ]
     assert _audio(down) == pytest.approx(0.2, abs=0.01)
+    # every response is tagged with the turn its audio belongs to
+    contexts = {f.context_id for f in down if isinstance(f, TTSAudioRawFrame)}
+    assert [m["context_id"] for m in server.metadata] == [*contexts] * 2
     kinds = [
         type(f) for f in down if isinstance(f, TTSStartedFrame | TTSAudioRawFrame | TTSStoppedFrame)
     ]
@@ -300,7 +303,7 @@ async def test_interruption_replaces_the_connection(speech: Any) -> None:
     down, up = await run_until_playing(
         tts,
         [
-            TTSSpeakFrame("A sentence the caller talks over."),
+            *_turn("A sentence the caller talks over. ", "A sentence never reached."),
             lambda down, up: any(isinstance(f, TTSAudioRawFrame) for f in down),
             InterruptionFrame(),
             lambda down, up: server.closed >= 1,
@@ -312,8 +315,8 @@ async def test_interruption_replaces_the_connection(speech: Any) -> None:
         ),
     )
     assert _errors(up) == []
-    assert [connection for connection, _ in server.spoken] == [0, 1]
-    assert server.overlaps == 0
+    # the interrupted turn's queued sentence is not sent again on the new session
+    assert server.spoken == [(0, "A sentence the caller talks over."), (1, "The next turn.")]
 
 
 async def test_voice_change_starts_a_new_session(speech: Any) -> None:
@@ -343,55 +346,32 @@ async def test_refused_voice_is_reported(speech: Any) -> None:
     assert any("unknown voice" in e for e in _errors(up))
 
 
-@pytest.mark.parametrize("behaviour", ["error:input_too_long", "failed:generation_timeout"])
-async def test_a_failed_sentence_does_not_stop_the_turn(speech: Any, behaviour: str) -> None:
-    server, url = await speech(script={0: behaviour})
+async def test_a_failed_sentence_does_not_stop_the_turn(speech: Any) -> None:
+    server, url = await speech(script={0: "failed:generation_timeout"})
     tts = SpragTTSService(api_key="test-key", url=url)
     down, up = await run_until_playing(
         tts, _turn("This first sentence fails. ", "The second sentence is fine."), _stopped
     )
-    assert any(behaviour.partition(":")[2] in e for e in _errors(up))
+    assert any("generation_timeout" in e for e in _errors(up))
     assert server.texts == ["This first sentence fails.", "The second sentence is fine."]
     assert _audio(down) == pytest.approx(0.1, abs=0.01)
 
 
-async def test_a_stalled_response_recovers(speech: Any) -> None:
-    server, url = await speech(script={0: "stall"})
-    tts = SpragTTSService(api_key="test-key", url=url, response_timeout=0.3)
-    down, up = await run_until_playing(
-        tts,
-        _turn("This first sentence never finishes. ", "The second sentence is fine."),
-        lambda down, up: len(server.texts) == 2 and _stopped(down, up),
-    )
-    assert any("did not finish" in e for e in _errors(up))
-    assert [connection for connection, _ in server.spoken] == [0, 1]
-    assert _audio(down) == pytest.approx(0.1, abs=0.01)
-
-
-async def test_a_long_response_that_keeps_speaking_is_not_cut_off(speech: Any) -> None:
-    server, url = await speech(script={0: "long"})
-    tts = SpragTTSService(api_key="test-key", url=url, response_timeout=0.3)
-    down, up = await run_until_playing(
-        tts, _turn("This first sentence runs long. ", "The second sentence is short."), _stopped
-    )
-    assert _errors(up) == []
-    assert [connection for connection, _ in server.spoken] == [0, 0]
-    assert _audio(down) == pytest.approx(0.2, abs=0.01)
-
-
-async def test_a_stalled_last_response_ends_the_turn(speech: Any) -> None:
-    server, url = await speech(script={0: "hang"})
-    tts = SpragTTSService(api_key="test-key", url=url, response_timeout=0.3)
+@pytest.mark.parametrize("code", ["response_queue_full", "rate_limit_exceeded"])
+async def test_a_refused_sentence_is_reported_and_the_turn_still_ends(
+    speech: Any, code: str
+) -> None:
+    server, url = await speech(script={1: f"refuse:{code}"})
+    tts = SpragTTSService(api_key="test-key", url=url)
     started = asyncio.get_running_loop().time()
     down, up = await run_until_playing(
-        tts,
-        [TTSSpeakFrame("This never finishes."), _stopped_times(1), TTSSpeakFrame("Next turn.")],
-        _stopped_times(2),
+        tts, _turn("The first sentence. ", "The last sentence is refused."), _stopped
     )
-    elapsed = asyncio.get_running_loop().time() - started
-    assert any("last response did not finish" in e for e in _errors(up))
-    assert elapsed < 2.5
-    assert [connection for connection, _ in server.spoken] == [0, 1]
+    # well inside Pipecat's stop-frame timeout, which would otherwise end the turn
+    assert asyncio.get_running_loop().time() - started < 2.5
+    assert any(code in e for e in _errors(up))
+    assert server.texts == ["The first sentence."]
+    assert _audio(down) == pytest.approx(0.1, abs=0.01)
 
 
 async def test_a_reconnect_waits_for_the_session_to_be_configured(speech: Any) -> None:
@@ -414,7 +394,7 @@ async def test_a_reconnect_waits_for_the_session_to_be_configured(speech: Any) -
 @pytest.mark.parametrize("how", ["close", "ignore"])
 async def test_a_session_that_is_never_configured_is_reported(speech: Any, how: str) -> None:
     server, url = await speech(configure={0: how})
-    tts = SpragTTSService(api_key="test-key", url=url, response_timeout=0.3)
+    tts = SpragTTSService(api_key="test-key", url=url, connect_timeout=0.3)
     down, up = await run_until_playing(
         tts,
         [lambda down, up: bool(_errors(up)), TTSSpeakFrame("Spoken on the next session.")],
@@ -426,7 +406,7 @@ async def test_a_session_that_is_never_configured_is_reported(speech: Any, how: 
 
 async def test_a_failed_send_does_not_block_the_next_sentence(speech: Any) -> None:
     server, url = await speech()
-    tts = SpragTTSService(api_key="test-key", url=url, response_timeout=0.3)
+    tts = SpragTTSService(api_key="test-key", url=url)
 
     def break_next_send(down: list[Frame], up: list[Frame]) -> bool:
         websocket = tts._websocket
@@ -453,7 +433,6 @@ async def test_a_failed_send_does_not_block_the_next_sentence(speech: Any) -> No
         lambda down, up: any("Spoken normally." in t for t in server.texts) and _stopped(down, up),
     )
     assert any("send error" in e for e in _errors(up))
-    assert not any("did not finish" in e for e in _errors(up))
     assert server.texts == ["Spoken normally."]
 
 
@@ -597,8 +576,7 @@ async def test_a_dropped_connection_moves_the_turn_to_a_new_one(speech: Any) -> 
     ]
     assert [connection for connection, _ in server.spoken] == [0, 1]
     assert len(server.handshakes) == 2
-    assert server.overlaps == 0
-    # half of the first sentence, then all of the second
+    # half of the first sentence, then all of the second, sent again on the new session
     assert _audio(down) == pytest.approx(0.15, abs=0.01)
 
 
