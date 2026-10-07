@@ -37,7 +37,7 @@ async def run_until_playing(*args: Any, **kwargs: Any) -> tuple[list[Frame], lis
 
 
 class _SpeechServer:
-    """Serves Sprag's realtime speech session: responses queue and are spoken in order.
+    """Serves Sprag's streaming speech socket: responses queue and are spoken in order.
 
     ``script`` maps a response's index, counted across connections in the order they
     were asked for, to a behaviour: ``ok`` (the default), ``slow`` (a pause mid-response),
@@ -200,11 +200,11 @@ async def speech() -> AsyncIterator[Any]:
     async def start(**kwargs: Any) -> tuple[_SpeechServer, str]:
         server = _SpeechServer(**kwargs)
         app = web.Application()
-        app.router.add_get("/v1/realtime", server.handle)
+        app.router.add_get("/v1/audio/speech", server.handle)
         test_server = TestServer(app)
         await test_server.start_server()
         servers.append(test_server)
-        return server, str(test_server.make_url("/v1/realtime")).replace("http://", "ws://")
+        return server, str(test_server.make_url("/v1/audio/speech")).replace("http://", "ws://")
 
     yield start
     for test_server in servers:
@@ -506,10 +506,10 @@ async def _serve_rejecting_first(status: int, server: _SpeechServer) -> tuple[Te
         return await server.handle(request)
 
     app = web.Application()
-    app.router.add_get("/v1/realtime", handle)
+    app.router.add_get("/v1/audio/speech", handle)
     test_server = TestServer(app)
     await test_server.start_server()
-    return test_server, str(test_server.make_url("/v1/realtime")).replace("http://", "ws://")
+    return test_server, str(test_server.make_url("/v1/audio/speech")).replace("http://", "ws://")
 
 
 async def test_an_unavailable_server_is_retried_on_the_next_sentence() -> None:

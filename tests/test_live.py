@@ -142,8 +142,8 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
 
 
 async def test_tts_speaks_a_multi_sentence_turn() -> None:
-    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
-    tts = SpragTTSService(url=realtime_url)
+    speech_url = BASE_URL.replace("https://", "wss://") + "/audio/speech"
+    tts = SpragTTSService(url=speech_url)
     turn = [
         LLMFullResponseStartFrame(),
         LLMTextFrame("Thanks for calling today, it is good to hear from you. "),
@@ -193,7 +193,7 @@ async def test_voice_agent_answers_a_spoken_question() -> None:
             SpragSTTService(base_url=realtime_url),
             user_aggregator,
             SpragLLMService(base_url=BASE_URL),
-            SpragTTSService(url=realtime_url),
+            SpragTTSService(url=BASE_URL.replace("https://", "wss://") + "/audio/speech"),
         ]
     )
     question = _audio_frames(_speech_pcm("What is the tallest mountain in the world?"), 0.5)

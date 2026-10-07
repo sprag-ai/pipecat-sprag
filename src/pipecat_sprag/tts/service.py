@@ -24,7 +24,7 @@ from pipecat.services.tts_service import InterruptibleTTSService
 from websockets.asyncio.client import ClientConnection
 from websockets.protocol import State
 
-from pipecat_sprag.common import ATTRIBUTION_HEADERS, SPRAG_REALTIME_URL, resolve_api_key
+from pipecat_sprag.common import ATTRIBUTION_HEADERS, SPRAG_SPEECH_URL, resolve_api_key
 
 SAMPLE_RATE = 24000
 
@@ -35,7 +35,7 @@ class SpragTTSSettings(TTSSettings):
 
 
 class SpragTTSService(InterruptibleTTSService):
-    """Streaming speech with Sprag's Chorus models over Sprag's realtime speech session.
+    """Streaming speech with Sprag's Chorus models over Sprag's streaming speech socket.
 
     Each sentence is spoken as its own response, sent as soon as Pipecat hands it over;
     the session queues responses and speaks them in order. Each response carries its
@@ -51,7 +51,7 @@ class SpragTTSService(InterruptibleTTSService):
         self,
         *,
         api_key: str | None = None,
-        url: str = SPRAG_REALTIME_URL,
+        url: str = SPRAG_SPEECH_URL,
         connect_timeout: float = 10.0,
         settings: SpragTTSSettings | None = None,
         **kwargs: Any,
@@ -61,7 +61,7 @@ class SpragTTSService(InterruptibleTTSService):
         Args:
             api_key: Your Sprag API key. Defaults to the ``SPRAG_API_KEY`` environment
                 variable.
-            url: The Sprag realtime WebSocket URL.
+            url: The Sprag streaming speech WebSocket URL.
             connect_timeout: Seconds the session may take to be configured.
             settings: Runtime-updatable settings. Defaults to the ``chorus`` model
                 and the ``wade`` voice.
