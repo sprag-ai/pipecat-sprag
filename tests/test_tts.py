@@ -261,7 +261,7 @@ async def test_sends_each_sentence_without_waiting_for_the_last(speech: Any) -> 
     assert kinds.count(TTSStartedFrame) == 1 and kinds.count(TTSStoppedFrame) == 1
 
     request = server.handshakes[0]
-    assert request.query["model"] == "chorus-clone"
+    assert request.query["model"] == "chorus"
     assert request.headers["Authorization"] == "Bearer test-key"
     assert request.headers["X-Sprag-Integration"] == ATTRIBUTION_HEADERS["X-Sprag-Integration"]
     assert server.voices == ["wade"]
@@ -459,7 +459,7 @@ async def test_a_url_with_a_query_keeps_it(speech: Any) -> None:
     tts = SpragTTSService(api_key="test-key", url=f"{url}?region=test")
     await run_until_playing(tts, [TTSSpeakFrame("Hello there.")], _stopped)
     assert server.handshakes[0].query["region"] == "test"
-    assert server.handshakes[0].query["model"] == "chorus-clone"
+    assert server.handshakes[0].query["model"] == "chorus"
 
 
 async def test_only_a_real_settings_change_replaces_the_session(speech: Any) -> None:

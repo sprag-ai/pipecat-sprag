@@ -94,7 +94,7 @@ def _speech_pcm(text: str) -> bytes:
     response = httpx.post(
         f"{BASE_URL}/audio/speech",
         headers={"Authorization": f"Bearer {os.environ['SPRAG_API_KEY']}"},
-        json={"model": "chorus-clone", "voice": "wade", "input": text, "response_format": "pcm"},
+        json={"model": "chorus", "voice": "wade", "input": text, "response_format": "pcm"},
         timeout=60,
     )
     response.raise_for_status()
