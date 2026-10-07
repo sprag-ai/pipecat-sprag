@@ -63,11 +63,11 @@ class SpragTTSService(InterruptibleTTSService):
                 variable.
             url: The Sprag realtime WebSocket URL.
             connect_timeout: Seconds the session may take to be configured.
-            settings: Runtime-updatable settings. Defaults to the ``chorus-clone`` model
+            settings: Runtime-updatable settings. Defaults to the ``chorus`` model
                 and the ``wade`` voice.
             **kwargs: Additional arguments passed to InterruptibleTTSService.
         """
-        default_settings = self.Settings(model="chorus-clone", voice="wade", language=None)
+        default_settings = self.Settings(model="chorus", voice="wade", language=None)
         if settings is not None:
             default_settings.apply_update(settings)
         super().__init__(
