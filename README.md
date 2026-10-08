@@ -36,7 +36,7 @@ pipeline = Pipeline(
 )
 ```
 
-- **`SpragSTTService`** streams audio to Rhythm over Sprag's realtime API. By default your pipeline's VAD decides when a turn ends; pass `turn_detection={"type": "server_vad"}` to let Sprag detect turns instead.
+- **`SpragSTTService`** streams audio to Rhythm over Sprag's streaming transcription socket (`wss://api.sprag.ai/v1/audio/transcriptions`). By default your pipeline's VAD decides when a turn ends; pass `turn_detection={"type": "server_vad"}` to let Sprag detect turns instead.
 - **`SpragLLMService`** runs Symphony through Sprag's chat completions API, with function calling and token usage metrics.
 - **`SpragTTSService`** streams Chorus speech over Sprag's streaming speech socket (`wss://api.sprag.ai/v1/audio/speech`), one sentence at a time. It defaults to the `chorus` model and the `wade` voice; the available voices are listed in [voice presets](https://sprag.ai/docs/tts/voices/presets).
 

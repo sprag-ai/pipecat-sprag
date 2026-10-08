@@ -6,7 +6,7 @@ from importlib.metadata import version
 __version__ = version("pipecat-sprag")
 
 SPRAG_BASE_URL = "https://api.sprag.ai/v1"
-SPRAG_REALTIME_URL = "wss://api.sprag.ai/v1/realtime"
+SPRAG_TRANSCRIPTION_URL = "wss://api.sprag.ai/v1/audio/transcriptions"
 SPRAG_SPEECH_URL = "wss://api.sprag.ai/v1/audio/speech"
 ATTRIBUTION_HEADERS = {"X-Sprag-Integration": f"pipecat/{__version__}"}
 

@@ -58,10 +58,10 @@ class _TranscriptionServer:
 async def transcription() -> AsyncIterator[tuple[_TranscriptionServer, str]]:
     server = _TranscriptionServer()
     app = web.Application()
-    app.router.add_get("/v1/realtime", server.handle)
+    app.router.add_get("/v1/audio/transcriptions", server.handle)
     test_server = TestServer(app)
     await test_server.start_server()
-    yield server, str(test_server.make_url("/v1/realtime")).replace("http://", "ws://")
+    yield server, str(test_server.make_url("/v1/audio/transcriptions")).replace("http://", "ws://")
     await test_server.close()
 
 
