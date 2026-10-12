@@ -41,7 +41,8 @@ class SpragTTSService(InterruptibleTTSService):
     the session queues responses and speaks them in order. Each response carries its
     turn's context id as metadata, which routes its audio back to that turn. Sprag
     cannot stop a response once it has started, so an interruption replaces the
-    connection rather than cancelling.
+    connection rather than cancelling. Sentences sent on a connection that drops are
+    lost; sentences that arrive while it reconnects are spoken on the new one.
     """
 
     Settings = SpragTTSSettings
@@ -85,7 +86,7 @@ class SpragTTSService(InterruptibleTTSService):
         self._unfinished: Counter[str] = Counter()
         self._flushed: set[str] = set()
         self._unstarted: dict[str, tuple[str, str]] = {}
-        self._resend: list[tuple[str, str]] = []
+        self._held: list[tuple[str, str]] = []
         self._speaking_context: str | None = None
         # run_tts and the receive loop's reconnect may both reach for a new socket
         self._connect_lock = asyncio.Lock()
@@ -141,12 +142,12 @@ class SpragTTSService(InterruptibleTTSService):
         self._websocket = None
         parts = urlsplit(self._url)
         query = "&".join(q for q in (parts.query, urlencode({"model": self._settings.model})) if q)
-        # an interrupted turn's stranded sentences are dropped
-        stranded, self._resend = self._resend, []
-        resend = []
-        for context_id, text in stranded:
+        # an interrupted turn's held sentences are dropped
+        waiting, self._held = self._held, []
+        unsent = []
+        for context_id, text in waiting:
             if self.audio_context_available(context_id):
-                resend.append((context_id, text))
+                unsent.append((context_id, text))
             else:
                 await self._finish_response(context_id)
         websocket: ClientConnection | None = None
@@ -162,13 +163,16 @@ class SpragTTSService(InterruptibleTTSService):
                 self._configure_session(websocket), timeout=self._connect_timeout
             )
             # sent before the socket is visible, so they keep their place ahead of new sentences
-            for context_id, text in resend:
+            while unsent:
+                context_id, text = unsent.pop(0)
                 await self._request(websocket, context_id, text)
         except BaseException as e:
             if websocket:
                 await websocket.close()
+            for context_id, _ in self._unstarted.values():
+                await self._finish_response(context_id)
             self._unstarted.clear()
-            self._resend = resend + self._resend
+            self._held = unsent + self._held
             if not isinstance(e, Exception):
                 raise
             await self.push_error(error_msg=f"Error connecting to Sprag TTS: {e}", exception=e)
@@ -198,12 +202,13 @@ class SpragTTSService(InterruptibleTTSService):
             await self._call_event_handler("on_disconnected")
 
     async def _strand(self) -> None:
-        # the response being spoken is lost; queued ones go out on the next session
-        self._resend += self._unstarted.values()
+        stranded = [context_id for context_id, _ in self._unstarted.values()]
         self._unstarted.clear()
         speaking, self._speaking_context = self._speaking_context, None
         if speaking is not None:
-            await self._finish_response(speaking)
+            stranded.append(speaking)
+        for context_id in stranded:
+            await self._finish_response(context_id)
 
     async def flush_audio(self, context_id: str | None = None) -> None:
         """Close the turn's audio context once its last response has finished.
@@ -302,9 +307,9 @@ class SpragTTSService(InterruptibleTTSService):
         """
         reconnecting = self._receive_task is not None and not self._receive_task.done()
         if self._websocket and self._websocket.state is not State.OPEN and reconnecting:
-            # the receive loop's reconnect sends it, behind the sentences the drop stranded
+            # the receive loop's reconnect sends it once the new session is configured
             self._unfinished[context_id] += 1
-            self._resend.append((context_id, text))
+            self._held.append((context_id, text))
             await self.start_tts_usage_metrics(text)
             yield None
             return
@@ -318,11 +323,8 @@ class SpragTTSService(InterruptibleTTSService):
         try:
             await self._request(websocket, context_id, text)
         except Exception as e:
-            if websocket.state is State.OPEN:
-                await self._finish_response(context_id)
-                yield ErrorFrame(error=f"Sprag TTS send error: {e}")
-                return
-            self._resend.append((context_id, text))
+            yield ErrorFrame(error=f"Sprag TTS send error: {e}")
+            return
         await self.start_tts_usage_metrics(text)
         yield None
 
@@ -344,8 +346,9 @@ class SpragTTSService(InterruptibleTTSService):
             await websocket.send(json.dumps({"type": "conversation.item.create", "item": item}))
             await websocket.send(json.dumps(create))
         except Exception:
-            if self._unstarted.pop(event_id, None) is None:
-                return  # the drop already queued it for the next session
+            # a drop noticed mid-send has already released it
+            if self._unstarted.pop(event_id, None) is not None:
+                await self._finish_response(context_id)
             raise
 
 

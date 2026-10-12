@@ -559,21 +559,24 @@ async def test_blank_input_sends_nothing(speech: Any) -> None:
     assert server.texts == ["Real words."]
 
 
-async def test_a_dropped_connection_moves_the_turn_to_a_new_one(speech: Any) -> None:
+async def test_a_dropped_connection_loses_the_rest_of_its_turn(speech: Any) -> None:
     server, url = await speech(script={0: "drop:1011"})
     tts = SpragTTSService(api_key="test-key", url=url)
     down, up = await run_until_playing(
         tts,
-        _turn("The server drops this first sentence. ", "The second sentence is spoken anyway."),
-        _stopped,
+        [
+            *_turn("The server drops this first sentence. ", "The second sentence is lost."),
+            _stopped_times(1),
+            lambda down, up: len(server.handshakes) == 2,
+            TTSSpeakFrame("The next turn is spoken."),
+        ],
+        _stopped_times(2),
     )
-    assert server.texts == [
-        "The server drops this first sentence.",
-        "The second sentence is spoken anyway.",
+    assert server.spoken == [
+        (0, "The server drops this first sentence."),
+        (1, "The next turn is spoken."),
     ]
-    assert [connection for connection, _ in server.spoken] == [0, 1]
-    assert len(server.handshakes) == 2
-    # half of the first sentence, then all of the second
+    # half of the first sentence, then all of the next turn
     assert _audio(down) == pytest.approx(0.15, abs=0.01)
 
 
@@ -634,9 +637,11 @@ async def test_an_interruption_during_a_reconnect_closes_the_unconfigured_socket
     await run_until_playing(
         tts,
         [
-            *_turn("The server drops this. ", "This waits for the reconnect."),
+            TTSSpeakFrame("The server drops this."),
             # the receive loop's reconnect is waiting on session.updated
             lambda down, up: len(server.handshakes) == 2,
+            TTSSpeakFrame("This waits for the reconnect."),
+            lambda down, up: tts._tts_started,
             InterruptionFrame(),
             TTSSpeakFrame("After the interruption."),
         ],
@@ -645,6 +650,7 @@ async def test_an_interruption_during_a_reconnect_closes_the_unconfigured_socket
     await asyncio.sleep(0.5)
     # the pipeline has shut down, so a socket still open was abandoned mid-configuration
     assert len(server.handshakes) == 3 and server.open == []
+    assert "This waits for the reconnect." not in server.texts
 
 
 class _DroppingSocket:
@@ -663,13 +669,13 @@ class _DroppingSocket:
 
 
 @pytest.mark.parametrize("noticed", [True, False])
-async def test_a_send_lost_to_a_drop_is_queued_once_for_the_next_session(noticed: bool) -> None:
+async def test_a_send_lost_to_a_drop_is_reported_and_released_once(noticed: bool) -> None:
     tts = SpragTTSService(api_key="test-key", url="ws://unused")
     tts._websocket = _DroppingSocket(tts, noticed)  # type: ignore[assignment]
     frames = [frame async for frame in tts.run_tts("Lost to the drop.", "turn")]
-    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
-    assert tts._resend == [("turn", "Lost to the drop.")]
-    assert tts._unstarted == {} and tts._unfinished["turn"] == 1
+    assert any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert tts._held == [] and tts._unstarted == {}
+    assert "turn" not in tts._unfinished
 
 
 async def test_a_socket_closed_without_a_reconnect_strands_nothing(speech: Any) -> None:
@@ -687,7 +693,7 @@ async def test_a_socket_closed_without_a_reconnect_strands_nothing(speech: Any) 
         _stopped_times(2),
     )
     assert server.texts[-1] == "A later turn."
-    assert tts._unstarted == {} and tts._resend == []
+    assert tts._unstarted == {} and tts._held == []
 
 
 def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
