@@ -9,6 +9,7 @@ from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestServer
 from helpers import run_until
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     ErrorFrame,
     Frame,
     InterruptionFrame,
@@ -640,6 +641,8 @@ async def test_an_interruption_during_a_reconnect_closes_the_unconfigured_socket
             TTSSpeakFrame("The server drops this."),
             # the receive loop's reconnect is waiting on session.updated
             lambda down, up: len(server.handshakes) == 2,
+            # the dropped turn's playback has ended, so its stop cannot clear the next turn's start
+            lambda down, up: any(isinstance(f, BotStoppedSpeakingFrame) for f in up),
             TTSSpeakFrame("This waits for the reconnect."),
             lambda down, up: tts._tts_started,
             InterruptionFrame(),
