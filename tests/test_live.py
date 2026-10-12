@@ -90,11 +90,11 @@ async def test_llm_calls_a_tool_and_reports_usage() -> None:
 
 
 def _speech_pcm(text: str) -> bytes:
-    """Synthesize ``text`` with Chorus over REST, as 24 kHz PCM, to feed the STT."""
+    """Chorus speech for ``text`` as 24 kHz PCM."""
     response = httpx.post(
         f"{BASE_URL}/audio/speech",
         headers={"Authorization": f"Bearer {os.environ['SPRAG_API_KEY']}"},
-        json={"model": "chorus-clone", "voice": "wade", "input": text, "response_format": "pcm"},
+        json={"model": "chorus", "voice": "wade", "input": text, "response_format": "pcm"},
         timeout=60,
     )
     response.raise_for_status()
@@ -121,8 +121,8 @@ def _heard_phrase(down: list[Frame], up: list[Frame]) -> bool:
 
 @pytest.mark.parametrize("turn_detection", [False, {"type": "server_vad"}])
 async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> None:
-    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
-    stt = SpragSTTService(base_url=realtime_url, turn_detection=turn_detection)  # type: ignore[arg-type]
+    transcription_url = BASE_URL.replace("https://", "wss://") + "/audio/transcriptions"
+    stt = SpragSTTService(base_url=transcription_url, turn_detection=turn_detection)  # type: ignore[arg-type]
     audio = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=1.0)
     frames: list[Frame] = (
         [VADUserStartedSpeakingFrame(), *audio, VADUserStoppedSpeakingFrame()]
@@ -142,8 +142,8 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
 
 
 async def test_tts_speaks_a_multi_sentence_turn() -> None:
-    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
-    tts = SpragTTSService(url=realtime_url)
+    speech_url = BASE_URL.replace("https://", "wss://") + "/audio/speech"
+    tts = SpragTTSService(url=speech_url)
     turn = [
         LLMFullResponseStartFrame(),
         LLMTextFrame("Thanks for calling today, it is good to hear from you. "),
@@ -183,17 +183,17 @@ async def test_tts_speaks_a_multi_sentence_turn() -> None:
 
 
 async def test_voice_agent_answers_a_spoken_question() -> None:
-    realtime_url = BASE_URL.replace("https://", "wss://") + "/realtime"
+    transcription_url = BASE_URL.replace("https://", "wss://") + "/audio/transcriptions"
     context = LLMContext(
         messages=[{"role": "system", "content": "Answer in one short sentence."}],
     )
     user_aggregator, _ = LLMContextAggregatorPair(context)
     agent = Pipeline(
         [
-            SpragSTTService(base_url=realtime_url),
+            SpragSTTService(base_url=transcription_url),
             user_aggregator,
             SpragLLMService(base_url=BASE_URL),
-            SpragTTSService(url=realtime_url),
+            SpragTTSService(url=BASE_URL.replace("https://", "wss://") + "/audio/speech"),
         ]
     )
     question = _audio_frames(_speech_pcm("What is the tallest mountain in the world?"), 0.5)

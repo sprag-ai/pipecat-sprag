@@ -23,8 +23,6 @@ SILENCE = b"\x00\x00" * 480  # 20 ms at 24 kHz
 
 
 class _TranscriptionServer:
-    """Speaks the realtime transcription events Sprag's gateway sends."""
-
     def __init__(self, transcript: str = "hello there") -> None:
         self.transcript = transcript
         self.handshakes: list[web.Request] = []
@@ -60,10 +58,10 @@ class _TranscriptionServer:
 async def transcription() -> AsyncIterator[tuple[_TranscriptionServer, str]]:
     server = _TranscriptionServer()
     app = web.Application()
-    app.router.add_get("/v1/realtime", server.handle)
+    app.router.add_get("/v1/audio/transcriptions", server.handle)
     test_server = TestServer(app)
     await test_server.start_server()
-    yield server, str(test_server.make_url("/v1/realtime")).replace("http://", "ws://")
+    yield server, str(test_server.make_url("/v1/audio/transcriptions")).replace("http://", "ws://")
     await test_server.close()
 
 

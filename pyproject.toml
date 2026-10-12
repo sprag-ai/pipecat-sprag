@@ -55,7 +55,6 @@ pythonpath = ["tests"]
 asyncio_default_fixture_loop_scope = "function"
 markers = ["live: calls api.sprag.ai and needs SPRAG_API_KEY"]
 addopts = "-m 'not live'"
-# a hung test fails with a traceback instead of stalling CI
 timeout = 30
 
 [tool.mypy]
