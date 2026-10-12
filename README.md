@@ -44,7 +44,7 @@ Each service takes `settings=<Service>.Settings(...)` for its model and other op
 
 ## Example
 
-[`examples/voice_agent.py`](examples/voice_agent.py) is a complete voice agent running on Rhythm, Symphony, and Chorus. It uses Pipecat's development runner:
+[`examples/voice_agent.py`](https://github.com/sprag-ai/pipecat-sprag/blob/main/examples/voice_agent.py) is a complete voice agent running on Rhythm, Symphony, and Chorus. It uses Pipecat's development runner:
 
 ```bash
 uv sync --group examples
@@ -70,4 +70,4 @@ Live tests call api.sprag.ai and are skipped by default: `SPRAG_API_KEY=... uv r
 
 ## License
 
-BSD 2-Clause. See [LICENSE](LICENSE).
+BSD 2-Clause. See [LICENSE](https://github.com/sprag-ai/pipecat-sprag/blob/main/LICENSE).
