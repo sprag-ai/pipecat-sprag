@@ -44,7 +44,8 @@ class _SpeechServer:
     were asked for, to a behaviour: ``ok`` (the default), ``slow`` (a pause mid-response),
     ``hang`` (one audio delta, then nothing), ``drop:<code>`` (one audio delta, then the
     server closes the socket), ``refuse:<code>`` (refused with an error naming the
-    request, its text left buffered), or ``failed:<code>``. ``configure`` maps a
+    request, its text left buffered), ``place:<code>`` (the session's placement is refused:
+    an error naming the request, then a 1013 close), or ``failed:<code>``. ``configure`` maps a
     connection's index to how it answers ``session.update``: ``ok`` (the default),
     ``late`` (after 0.3 s), ``close``, or ``ignore``. With ``refuse_reconnects``, every
     handshake after the first is answered with a 503.
@@ -65,6 +66,7 @@ class _SpeechServer:
         self.open: list[web.WebSocketResponse] = []
         self.handshakes: list[web.Request] = []
         self.voices: list[str] = []
+        self.formats: list[dict[str, Any]] = []
         self.asked = 0
         self.spoken: list[tuple[int, str]] = []
         self.metadata: list[dict[str, str]] = []
@@ -115,6 +117,7 @@ class _SpeechServer:
             if event["type"] == "session.update":
                 voice = event["session"]["audio"]["output"]["voice"]
                 self.voices.append(voice)
+                self.formats.append(event["session"]["audio"]["output"]["format"])
                 if self.reject_voice:
                     error = {"code": "unknown_voice", "message": f"unknown voice '{voice}'"}
                     await ws.send_json({"type": "error", "error": error})
@@ -136,9 +139,11 @@ class _SpeechServer:
                 behaviour = self.script.get(self.asked, "ok")
                 self.asked += 1
                 kind, _, code = behaviour.partition(":")
-                if kind == "refuse":
+                if kind in ("refuse", "place"):
                     error = {"code": code, "message": code, "event_id": event.get("event_id")}
                     await ws.send_json({"type": "error", "error": error})
+                    if kind == "place":
+                        await ws.close(code=1013)
                     continue
                 metadata = (event.get("response") or {}).get("metadata") or {}
                 waiting.put_nowait((behaviour, "".join(buffered), metadata))
@@ -261,6 +266,7 @@ async def test_sends_each_sentence_without_waiting_for_the_last(speech: Any) -> 
     assert kinds[0] is TTSStartedFrame and kinds[-1] is TTSStoppedFrame
     assert kinds.count(TTSStartedFrame) == 1 and kinds.count(TTSStoppedFrame) == 1
 
+    assert server.formats == [{"type": "audio/pcm", "rate": 24000}]
     request = server.handshakes[0]
     assert request.query["model"] == "chorus"
     assert request.headers["Authorization"] == "Bearer test-key"
@@ -370,6 +376,55 @@ async def test_a_refused_sentence_is_reported_and_the_turn_still_ends(
     assert any(code in e for e in _errors(up))
     assert server.texts == ["The first sentence."]
     assert _audio(down) == pytest.approx(0.1, abs=0.01)
+
+
+@pytest.mark.parametrize("code", ["model_at_capacity", "model_not_running"])
+async def test_a_refused_placement_ends_the_turn_and_the_next_turn_retries(
+    speech: Any, code: str
+) -> None:
+    server, url = await speech(script={0: f"place:{code}"})
+    tts = SpragTTSService(api_key="test-key", url=url)
+    started = asyncio.get_running_loop().time()
+    down, up = await run_until_playing(
+        tts,
+        [
+            *_turn("No pod is free for this sentence. ", "Nor for this one."),
+            _stopped_times(1),
+            lambda down, up: len(server.handshakes) == 2,
+            TTSSpeakFrame("The next turn is spoken."),
+        ],
+        _stopped_times(2),
+    )
+    # well inside Pipecat's stop-frame timeout, which would otherwise end the turn
+    assert asyncio.get_running_loop().time() - started < 2.5
+    assert any(code in e for e in _errors(up))
+    assert server.spoken == [(1, "The next turn is spoken.")]
+
+
+@pytest.mark.parametrize("rate", [8000, 16000, 48000])
+async def test_declares_the_pipeline_sample_rate(speech: Any, rate: int) -> None:
+    server, url = await speech()
+    tts = SpragTTSService(api_key="test-key", url=url)
+    down, _ = await run_until_playing(
+        tts,
+        [TTSSpeakFrame("Hello there.")],
+        _stopped,
+        params=PipelineParams(audio_out_sample_rate=rate),
+    )
+    assert server.formats == [{"type": "audio/pcm", "rate": rate}]
+    assert {f.sample_rate for f in down if isinstance(f, TTSAudioRawFrame)} == {rate}
+
+
+async def test_an_explicit_sample_rate_overrides_the_pipeline(speech: Any) -> None:
+    server, url = await speech()
+    tts = SpragTTSService(api_key="test-key", url=url, sample_rate=16000)
+    await run_until_playing(
+        tts,
+        [TTSSpeakFrame("Hello there.")],
+        _stopped,
+        params=PipelineParams(audio_out_sample_rate=48000),
+    )
+    assert server.formats == [{"type": "audio/pcm", "rate": 16000}]
 
 
 async def test_a_reconnect_waits_for_the_session_to_be_configured(speech: Any) -> None:
