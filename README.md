@@ -53,6 +53,15 @@ SPRAG_API_KEY=... uv run examples/voice_agent.py
 
 Then open the printed URL in your browser and talk to it.
 
+[`examples/demo.py`](https://github.com/sprag-ai/pipecat-sprag/blob/main/examples/demo.py) runs the same pipeline behind a Sprag-branded browser client that shows the live transcript, which service is working, and each service's time to first byte:
+
+```bash
+uv sync --group examples
+SPRAG_API_KEY=... uv run examples/demo.py
+```
+
+Then open http://localhost:7860.
+
 ## Compatibility
 
 Requires `pipecat-ai>=1.8,<2`. Tested with Pipecat v1.12.0.

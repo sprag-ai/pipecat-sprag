@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprag for Pipecat</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Michroma&family=Public+Sans:wght@400;500;600;700&family=Schibsted+Grotesk:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --background: 242 29% 10%;
+    --foreground: 255 48% 96%;
+    --card: 242 28% 12%;
+    --muted: 242 20% 15%;
+    --muted-foreground: 248 18% 72%;
+    --primary: 161 84% 39%;
+    --primary-ink: 161 84% 44%;
+    --primary-foreground: 242 34% 9%;
+    --accent: 262 83% 66%;
+    --border: 252 35% 84% / 0.12;
+    --destructive: 0 72% 58%;
+    --gradient-hero: radial-gradient(circle at top, hsl(242 31% 15%) 0%, hsl(242 29% 10%) 56%, hsl(240 26% 8%) 100%);
+    --gradient-card: linear-gradient(135deg, hsl(242 28% 13%) 0%, hsl(242 26% 15%) 100%);
+    --shadow-card: 0 1px 0 oklch(1 0 0 / 0.03), 0 16px 36px oklch(0 0 0 / 0.34);
+    --radius: 0.75rem;
+    --font-body: 'Public Sans', system-ui, sans-serif;
+    --font-heading: 'Schibsted Grotesk', system-ui, sans-serif;
+    --font-brand: 'Michroma', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: hsl(var(--background));
+    background-image: var(--gradient-hero);
+    color: hsl(var(--foreground));
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell {
+    max-width: 1080px;
+    min-height: 100%;
+    margin: 0 auto;
+    padding: 20px 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  header { display: flex; align-items: center; gap: 12px; }
+  header .lockup { height: 26px; display: block; }
+  .with {
+    font-family: var(--font-heading);
+    font-weight: 600;
+    font-size: 0.9375rem;
+    color: hsl(var(--muted-foreground));
+  }
+  .with b { color: hsl(var(--foreground)); font-weight: 700; }
+  .status {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: hsl(var(--muted-foreground));
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: hsl(var(--muted-foreground) / 0.5); }
+  .status.live .dot { background: hsl(var(--primary)); box-shadow: 0 0 0 4px hsl(var(--primary) / 0.18); }
+
+  .top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  @media (min-width: 760px) { .top { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
+
+  .card {
+    background: var(--gradient-card);
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-card);
+  }
+  .stage {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 22px 16px 20px;
+    min-height: 300px;
+  }
+  .orb { position: relative; width: 210px; height: 210px; }
+  .orb canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .orb img {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 46px;
+    transform: translate(-50%, -50%);
+    opacity: 0.92;
+  }
+  .state {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 1.25rem;
+    letter-spacing: -0.01em;
+    min-height: 1.6em;
+  }
+  .state.speaking { color: hsl(var(--primary-ink)); }
+  .state.listening, .state.user { color: hsl(var(--accent)); }
+  .state.interrupted { color: hsl(var(--destructive)); }
+  button.connect {
+    font-family: var(--font-heading);
+    font-weight: 700;
+    font-size: 0.9375rem;
+    padding: 10px 22px;
+    border-radius: 999px;
+    border: 1px solid hsl(161 84% 27%);
+    background: linear-gradient(180deg, hsl(161 84% 44%) 0%, hsl(var(--primary)) 100%);
+    color: hsl(var(--primary-foreground));
+    box-shadow: 0 1px 2px oklch(0 0 0 / 0.07), 0 8px 18px oklch(0.62 0.18 162 / 0.18);
+    cursor: pointer;
+  }
+  button.connect.end {
+    background: transparent;
+    color: hsl(var(--foreground));
+    border-color: hsl(var(--border));
+    box-shadow: none;
+  }
+  button.connect:disabled { opacity: 0.6; cursor: default; }
+
+  .pipeline { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    margin: 0 2px 2px;
+  }
+  .svc {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--muted) / 0.6);
+    transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  }
+  .svc.active {
+    border-color: hsl(var(--svc-color) / 0.7);
+    background: hsl(var(--svc-color) / 0.1);
+    box-shadow: 0 0 0 3px hsl(var(--svc-color) / 0.12);
+  }
+  .svc .role {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    padding: 3px 7px;
+    border-radius: 6px;
+    color: hsl(var(--svc-color));
+    background: hsl(var(--svc-color) / 0.14);
+  }
+  .svc .name { font-family: var(--font-heading); font-weight: 700; font-size: 1.0625rem; }
+  .svc .route {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .svc .ttfb { font-family: var(--font-mono); font-size: 0.8125rem; text-align: right; color: hsl(var(--muted-foreground)); }
+  .svc .ttfb b { display: block; font-size: 1rem; font-weight: 500; color: hsl(var(--foreground)); }
+  .svc.stt { --svc-color: var(--accent); }
+  .svc.llm { --svc-color: 213 80% 65%; }
+  .svc.tts { --svc-color: var(--primary-ink); }
+
+  .transcript {
+    flex: 1;
+    min-height: 220px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+  .lines { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; max-height: 42vh; }
+  .empty { color: hsl(var(--muted-foreground)); font-size: 0.9375rem; margin: auto; text-align: center; }
+  .line { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; font-size: 1rem; line-height: 1.5; }
+  .who { font-family: var(--font-mono); font-size: 0.75rem; padding-top: 4px; color: hsl(var(--muted-foreground)); }
+  .line.user .who { color: hsl(var(--accent)); }
+  .line.bot .who { color: hsl(var(--primary-ink)); }
+  .line.user .text.interim { color: hsl(var(--muted-foreground)); }
+  .tag {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    vertical-align: 2px;
+    color: hsl(var(--destructive));
+    background: hsl(var(--destructive) / 0.14);
+  }
+  footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    color: hsl(var(--muted-foreground));
+  }
+  footer code { color: hsl(var(--primary-ink)); }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <img class="lockup" src="sprag-lockup-dark.svg" alt="Sprag">
+    <span class="with">for <b>Pipecat</b></span>
+    <div class="status" id="status"><span class="dot"></span><span id="status-text">Not connected</span></div>
+  </header>
+
+  <div class="top">
+    <section class="card stage">
+      <div class="orb"><canvas id="orb" width="420" height="420"></canvas><img src="sprag-mark-dark.svg" alt=""></div>
+      <div class="state" id="state">Ready</div>
+      <button class="connect" id="connect">Start conversation</button>
+    </section>
+
+    <section class="card pipeline">
+      <div class="eyebrow">Pipeline · pipecat-sprag</div>
+      <div class="svc stt" id="svc-stt">
+        <span class="role">STT</span>
+        <div><div class="name">Rhythm</div><div class="route">WSS · /v1/audio/transcriptions</div></div>
+        <div class="ttfb"><b id="ttfb-stt">–</b>TTFB</div>
+      </div>
+      <div class="svc llm" id="svc-llm">
+        <span class="role">LLM</span>
+        <div><div class="name">Symphony</div><div class="route">HTTPS · /v1/chat/completions</div></div>
+        <div class="ttfb"><b id="ttfb-llm">–</b>TTFB</div>
+      </div>
+      <div class="svc tts" id="svc-tts">
+        <span class="role">TTS</span>
+        <div><div class="name">Chorus</div><div class="route">WSS · /v1/audio/speech</div></div>
+        <div class="ttfb"><b id="ttfb-tts">–</b>TTFB</div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card transcript">
+    <div class="eyebrow">Conversation</div>
+    <div class="lines" id="lines"><div class="empty" id="empty">Start the conversation, then speak. Talk over the agent at any point to interrupt it.</div></div>
+  </section>
+
+  <footer>
+    <span><code>uv add pipecat-sprag</code></span>
+    <span>github.com/sprag-ai/pipecat-sprag</span>
+  </footer>
+</div>
+<audio id="bot-audio" autoplay></audio>
+
+<script type="module">
+import { PipecatClient } from "https://esm.sh/@pipecat-ai/client-js@1.14.0";
+import { SmallWebRTCTransport } from "https://esm.sh/@pipecat-ai/small-webrtc-transport@1.11.0?deps=@pipecat-ai/client-js@1.14.0";
+
+const $ = (id) => document.getElementById(id);
+const lines = $("lines");
+const button = $("connect");
+
+let client = null;
+let connectedAt = 0;
+let timer = null;
+let botSpeaking = false;
+let userSpeaking = false;
+let botLine = null;
+let botTurnOpen = true;
+let userLine = null;
+let interruptedUntil = 0;
+let level = 0;
+let target = 0;
+
+function setState(name, label) {
+  const el = $("state");
+  el.className = "state " + name;
+  el.textContent = label;
+}
+
+function refreshState() {
+  if (!client) return;
+  if (performance.now() < interruptedUntil) return setState("interrupted", "Interrupted");
+  if (botSpeaking) return setState("speaking", "Speaking");
+  if (userSpeaking) return setState("user", "Hearing you");
+  if (userLine && !botLine) return setState("thinking", "Thinking");
+  setState("listening", "Listening");
+}
+
+function activate(kind, on) {
+  $("svc-" + kind).classList.toggle("active", on);
+}
+
+function addLine(who) {
+  $("empty")?.remove();
+  const line = document.createElement("div");
+  line.className = "line " + who;
+  line.innerHTML = `<div class="who">${who === "user" ? "You" : "Agent"}</div><div class="text"></div>`;
+  lines.appendChild(line);
+  lines.scrollTop = lines.scrollHeight;
+  return line;
+}
+
+function setText(line, text, interim) {
+  const el = line.querySelector(".text");
+  el.textContent = text;
+  el.classList.toggle("interim", interim);
+  lines.scrollTop = lines.scrollHeight;
+}
+
+function renderBot(line) {
+  line.querySelector(".text").textContent = line.spoken;
+  lines.scrollTop = lines.scrollHeight;
+}
+
+const CHARS_PER_SECOND = 23;
+const peers = [];
+const NativePeerConnection = window.RTCPeerConnection;
+window.RTCPeerConnection = function (...args) {
+  const pc = new NativePeerConnection(...args);
+  peers.push(pc);
+  return pc;
+};
+window.RTCPeerConnection.prototype = NativePeerConnection.prototype;
+
+let lastEnergy = null;
+let lastSample = 0;
+setInterval(async () => {
+  const pc = peers.at(-1);
+  if (!pc || pc.connectionState !== "connected") return;
+  let energy = null;
+  (await pc.getStats()).forEach((s) => {
+    if (s.type === "inbound-rtp" && s.kind === "audio") energy = s.totalAudioEnergy ?? 0;
+  });
+  const now = performance.now();
+  if (energy === null) return;
+  const seconds = (now - lastSample) / 1000;
+  const power = lastEnergy === null || seconds <= 0 ? 0 : (energy - lastEnergy) / seconds;
+  lastEnergy = energy;
+  lastSample = now;
+  const rms = Math.sqrt(Math.max(0, power));
+  if (botSpeaking) target = Math.max(target, rms * 3);
+  if (!botSpeaking || !botLine || !botLine.pending || rms < 0.02) return;
+  botLine.budget = (botLine.budget || 0) + seconds * CHARS_PER_SECOND;
+  let revealed = false;
+  for (let word = botLine.pending.match(/^\s*\S+/); word && word[0].length <= botLine.budget; word = botLine.pending.match(/^\s*\S+/)) {
+    botLine.budget -= word[0].length;
+    botLine.pending = botLine.pending.slice(word[0].length);
+    botLine.spoken += word[0];
+    revealed = true;
+  }
+  if (revealed) renderBot(botLine);
+}, 100);
+
+function tick() {
+  $("status-text").textContent = "Connected · " + new Date(Date.now() - connectedAt).toISOString().slice(14, 19);
+}
+
+function showTtfb(metrics) {
+  for (const m of metrics.ttfb ?? []) {
+    const name = (m.processor || "").toUpperCase();
+    const kind = name.includes("STT") ? "stt" : name.includes("LLM") ? "llm" : name.includes("TTS") ? "tts" : null;
+    if (kind && m.value > 0) $("ttfb-" + kind).textContent = Math.round(m.value * 1000) + " ms";
+  }
+}
+
+const callbacks = {
+  onConnected() {
+    connectedAt = Date.now();
+    $("status").classList.add("live");
+    tick();
+    timer = setInterval(tick, 500);
+    button.disabled = false;
+    button.textContent = "End conversation";
+    button.classList.add("end");
+    refreshState();
+  },
+  onDisconnected() {
+    holdAudioOutput(false);
+    clearInterval(timer);
+    $("status").classList.remove("live");
+    $("status-text").textContent = "Not connected";
+    client = null;
+    botSpeaking = userSpeaking = false;
+    ["stt", "llm", "tts"].forEach((k) => activate(k, false));
+    button.disabled = false;
+    button.textContent = "Start conversation";
+    button.classList.remove("end");
+    setState("", "Ready");
+  },
+  onTrackStarted(track, participant) {
+    if (track.kind === "audio" && !participant?.local) {
+      const audio = $("bot-audio");
+      audio.srcObject = new MediaStream([track]);
+      audio.play().catch(() => {});
+    }
+  },
+  onUserStartedSpeaking() {
+    userSpeaking = true;
+    activate("stt", true);
+    if (botSpeaking && botLine) {
+      botLine.pending = "";
+      if (!botLine.spoken) botLine.spoken = "…";
+      renderBot(botLine);
+      botLine.querySelector(".text").insertAdjacentHTML("beforeend", '<span class="tag">interrupted</span>');
+      interruptedUntil = performance.now() + 1200;
+      setTimeout(refreshState, 1250);
+    }
+    botLine = null;
+    botTurnOpen = false;
+    refreshState();
+  },
+  onUserStoppedSpeaking() {
+    userSpeaking = false;
+    activate("stt", false);
+    refreshState();
+  },
+  onUserTranscript(data) {
+    if (!data.text) return;
+    if (!userLine || botLine) {
+      userLine = addLine("user");
+      userLine.dataset.final = "";
+      botLine = null;
+    }
+    const final = userLine.dataset.final;
+    if (data.final) {
+      userLine.dataset.final = (final ? final + " " : "") + data.text;
+      setText(userLine, userLine.dataset.final, false);
+    } else {
+      setText(userLine, (final ? final + " " : "") + data.text, true);
+    }
+    refreshState();
+  },
+  onBotLlmStarted() { activate("llm", true); },
+  onBotLlmStopped() { activate("llm", false); },
+  onBotStartedSpeaking() {
+    botSpeaking = true;
+    botTurnOpen = true;
+    activate("tts", true);
+    refreshState();
+  },
+  onBotStoppedSpeaking() {
+    botSpeaking = false;
+    if (botLine && botLine.pending) {
+      botLine.spoken += botLine.pending;
+      botLine.pending = "";
+      renderBot(botLine);
+    }
+    activate("tts", false);
+    refreshState();
+  },
+  onBotOutput(data) {
+    if (!data.text || data.spoken === false || !botTurnOpen) return;
+    if (!botLine) {
+      botLine = addLine("bot");
+      botLine.spoken = "";
+      botLine.pending = "";
+      userLine = null;
+    }
+    const text = data.text.replace(/[*_#`]/g, "").trim();
+    botLine.pending += (botLine.spoken || botLine.pending ? " " : "") + text;
+    refreshState();
+  },
+  onMetrics: showTtfb,
+  onLocalAudioLevel(v) { if (!botSpeaking) target = v; },
+  onRemoteAudioLevel(v) { if (botSpeaking) target = v; },
+};
+
+let keepAwake = null;
+function holdAudioOutput(on) {
+  if (on && !keepAwake) {
+    const context = new AudioContext();
+    const tone = context.createOscillator();
+    const gain = context.createGain();
+    gain.gain.value = 0.0001;
+    tone.connect(gain).connect(context.destination);
+    tone.start();
+    keepAwake = context;
+  } else if (!on && keepAwake) {
+    keepAwake.close();
+    keepAwake = null;
+  }
+}
+
+button.addEventListener("click", async () => {
+  if (client) {
+    button.disabled = true;
+    holdAudioOutput(false);
+    await client.disconnect();
+    return;
+  }
+  holdAudioOutput(true);
+  button.disabled = true;
+  button.textContent = "Connecting…";
+  setState("", "Connecting");
+  client = new PipecatClient({
+    transport: new SmallWebRTCTransport(),
+    enableMic: true,
+    enableCam: false,
+    callbacks,
+  });
+  try {
+    await client.connect({ webrtcRequestParams: { endpoint: "/api/offer" } });
+  } catch (e) {
+    console.error(e);
+    callbacks.onDisconnected();
+    setState("interrupted", "Could not connect");
+  }
+});
+
+const canvas = $("orb");
+const ctx = canvas.getContext("2d");
+function draw(t) {
+  if (!Number.isFinite(target)) target = 0;
+  if (!Number.isFinite(level)) level = 0;
+  level += (Math.min(1, target * 2.2) - level) * 0.18;
+  target *= 0.92;
+  const w = canvas.width, c = w / 2;
+  ctx.clearRect(0, 0, w, w);
+  const hue = botSpeaking ? "161 84% 44%" : client ? "262 83% 66%" : "248 18% 72%";
+  for (let i = 3; i >= 0; i--) {
+    const breathe = Math.sin(t / 900 + i) * 3;
+    const r = 62 + i * 30 + level * (24 + i * 16) + breathe;
+    ctx.beginPath();
+    ctx.arc(c, c, r, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${hue} / ${0.05 + (3 - i) * 0.035 + level * 0.08})`;
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.arc(c, c, 62 + level * 18, 0, Math.PI * 2);
+  ctx.fillStyle = "hsl(242 28% 12%)";
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = `hsl(${hue} / ${0.55 + level * 0.45})`;
+  ctx.stroke();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

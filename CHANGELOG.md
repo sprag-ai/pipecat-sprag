@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `examples/demo.py`: the voice agent behind a Sprag-branded browser client.
+
 ## 0.1.0
 
 ### Added
