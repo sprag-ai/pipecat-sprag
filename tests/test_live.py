@@ -141,7 +141,8 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
     assert "tide came in slowly" in _transcript(down)
 
 
-async def test_tts_speaks_a_multi_sentence_turn() -> None:
+@pytest.mark.parametrize("rate", [24000, 16000])
+async def test_tts_speaks_a_multi_sentence_turn(rate: int) -> None:
     speech_url = BASE_URL.replace("https://", "wss://") + "/audio/speech"
     tts = SpragTTSService(url=speech_url)
     turn = [
@@ -157,18 +158,21 @@ async def test_tts_speaks_a_multi_sentence_turn() -> None:
             any(isinstance(f, TTSStoppedFrame) for f in down)
             or any(isinstance(f, ErrorFrame) for f in up)
         ),
+        params=PipelineParams(audio_out_sample_rate=rate),
         timeout=30,
         play_audio=True,
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
-    pcm = b"".join(f.audio for f in down if isinstance(f, TTSAudioRawFrame))
-    assert len(pcm) / 2 / 24000 > 3
+    frames = [f for f in down if isinstance(f, TTSAudioRawFrame)]
+    assert {f.sample_rate for f in frames} == {rate}
+    pcm = b"".join(f.audio for f in frames)
+    assert len(pcm) / 2 / rate > 3
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
-        wav.setframerate(24000)
+        wav.setframerate(rate)
         wav.writeframes(pcm)
     response = httpx.post(
         f"{BASE_URL}/audio/transcriptions",
