@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="260 245 504 580">
+<style>:root{color:#0a0a0a}@media (prefers-color-scheme: dark){:root{color:#ffffff}}</style>
+<g id="logo" fill="currentColor" stroke="none">
+<g id="macro_up_0_0">
+<polygon id="macro_up_0_0_top" points="512.00,253.74 475.45,317.05 548.55,317.05"/>
+<polygon id="macro_up_0_0_left" points="475.45,317.05 438.90,380.35 512.00,380.35"/>
+<polygon id="macro_up_0_0_right" points="548.55,317.05 512.00,380.35 585.10,380.35"/>
+<polygon id="macro_up_0_0_center" points="475.45,317.05 548.55,317.05 512.00,380.35"/>
+</g>
+<g id="macro_down_0_0">
+<polygon id="macro_down_0_0_left" points="438.90,394.09 512.00,394.09 475.45,457.40"/>
+<polygon id="macro_down_0_0_right" points="512.00,394.09 585.10,394.09 548.55,457.40"/>
+<polygon id="macro_down_0_0_bottom" points="475.45,457.40 548.55,457.40 512.00,520.71"/>
+<polygon id="macro_down_0_0_center" points="512.00,394.09 548.55,457.40 475.45,457.40"/>
+</g>
+<g id="macro_up_1_0">
+<polygon id="macro_up_1_0_top" points="427.00,400.97 390.45,464.27 463.55,464.27"/>
+<polygon id="macro_up_1_0_left" points="390.45,464.27 353.90,527.58 427.00,527.58"/>
+<polygon id="macro_up_1_0_right" points="463.55,464.27 427.00,527.58 500.10,527.58"/>
+<polygon id="macro_up_1_0_center" points="390.45,464.27 463.55,464.27 427.00,527.58"/>
+</g>
+<g id="macro_up_1_1">
+<polygon id="macro_up_1_1_top" points="597.00,400.97 560.45,464.27 633.55,464.27"/>
+<polygon id="macro_up_1_1_left" points="560.45,464.27 523.90,527.58 597.00,527.58"/>
+<polygon id="macro_up_1_1_right" points="633.55,464.27 597.00,527.58 670.10,527.58"/>
+<polygon id="macro_up_1_1_center" points="560.45,464.27 633.55,464.27 597.00,527.58"/>
+</g>
+<g id="macro_down_1_0">
+<polygon id="macro_down_1_0_left" points="353.90,541.32 427.00,541.32 390.45,604.63"/>
+<polygon id="macro_down_1_0_right" points="427.00,541.32 500.10,541.32 463.55,604.63"/>
+<polygon id="macro_down_1_0_bottom" points="390.45,604.63 463.55,604.63 427.00,667.93"/>
+<polygon id="macro_down_1_0_center" points="427.00,541.32 463.55,604.63 390.45,604.63"/>
+</g>
+<g id="macro_down_1_1">
+<polygon id="macro_down_1_1_left" points="523.90,541.32 597.00,541.32 560.45,604.63"/>
+<polygon id="macro_down_1_1_right" points="597.00,541.32 670.10,541.32 633.55,604.63"/>
+<polygon id="macro_down_1_1_bottom" points="560.45,604.63 633.55,604.63 597.00,667.93"/>
+<polygon id="macro_down_1_1_center" points="597.00,541.32 633.55,604.63 560.45,604.63"/>
+</g>
+<g id="macro_up_2_0">
+<polygon id="macro_up_2_0_top" points="342.00,548.19 305.45,611.50 378.55,611.50"/>
+<polygon id="macro_up_2_0_left" points="305.45,611.50 268.90,674.80 342.00,674.80"/>
+<polygon id="macro_up_2_0_right" points="378.55,611.50 342.00,674.80 415.10,674.80"/>
+<polygon id="macro_up_2_0_center" points="305.45,611.50 378.55,611.50 342.00,674.80"/>
+</g>
+<g id="macro_up_2_2">
+<polygon id="macro_up_2_2_top" points="682.00,548.19 645.45,611.50 718.55,611.50"/>
+<polygon id="macro_up_2_2_left" points="645.45,611.50 608.90,674.80 682.00,674.80"/>
+<polygon id="macro_up_2_2_right" points="718.55,611.50 682.00,674.80 755.10,674.80"/>
+<polygon id="macro_up_2_2_center" points="645.45,611.50 718.55,611.50 682.00,674.80"/>
+</g>
+<g id="macro_down_2_0">
+<polygon id="macro_down_2_0_left" points="268.90,688.54 342.00,688.54 305.45,751.85"/>
+<polygon id="macro_down_2_0_right" points="342.00,688.54 415.10,688.54 378.55,751.85"/>
+<polygon id="macro_down_2_0_bottom" points="305.45,751.85 378.55,751.85 342.00,815.16"/>
+<polygon id="macro_down_2_0_center" points="342.00,688.54 378.55,751.85 305.45,751.85"/>
+</g>
+<g id="macro_down_2_1">
+<polygon id="macro_down_2_1_left" points="438.90,688.54 512.00,688.54 475.45,751.85"/>
+<polygon id="macro_down_2_1_right" points="512.00,688.54 585.10,688.54 548.55,751.85"/>
+<polygon id="macro_down_2_1_bottom" points="475.45,751.85 548.55,751.85 512.00,815.16"/>
+<polygon id="macro_down_2_1_center" points="512.00,688.54 548.55,751.85 475.45,751.85"/>
+</g>
+<g id="macro_down_2_2">
+<polygon id="macro_down_2_2_left" points="608.90,688.54 682.00,688.54 645.45,751.85"/>
+<polygon id="macro_down_2_2_right" points="682.00,688.54 755.10,688.54 718.55,751.85"/>
+<polygon id="macro_down_2_2_bottom" points="645.45,751.85 718.55,751.85 682.00,815.16"/>
+<polygon id="macro_down_2_2_center" points="682.00,688.54 718.55,751.85 645.45,751.85"/>
+</g>
+<g id="macro_up_3_1">
+<polygon id="macro_up_3_1_top" points="427.00,695.41 390.45,758.72 463.55,758.72"/>
+<polygon id="macro_up_3_1_left" points="390.45,758.72 353.90,822.03 427.00,822.03"/>
+<polygon id="macro_up_3_1_right" points="463.55,758.72 427.00,822.03 500.10,822.03"/>
+<polygon id="macro_up_3_1_center" points="390.45,758.72 463.55,758.72 427.00,822.03"/>
+</g>
+<g id="macro_up_3_2">
+<polygon id="macro_up_3_2_top" points="597.00,695.41 560.45,758.72 633.55,758.72"/>
+<polygon id="macro_up_3_2_left" points="560.45,758.72 523.90,822.03 597.00,822.03"/>
+<polygon id="macro_up_3_2_right" points="633.55,758.72 597.00,822.03 670.10,822.03"/>
+<polygon id="macro_up_3_2_center" points="560.45,758.72 633.55,758.72 597.00,822.03"/>
+</g>
+</g></svg>
