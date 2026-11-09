@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.0.dev1
 
 ### Added
 
 - `examples/demo.py`: the voice agent behind a Sprag-branded browser client.
+- `SpragTurnDetector`: Sprag's turn model as a processor that pushes `UserTurnInferenceCompletedFrame`.
+- `SpragTurnAnalyzer`: Sprag's turn model as a streaming turn analyzer.
+- `SpragAgentTextObserver`: gives either one the agent's last reply as context.
 
 ## 0.1.0
 

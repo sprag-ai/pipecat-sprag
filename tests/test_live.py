@@ -26,6 +26,7 @@ from pipecat.frames.frames import (
     TTSAudioRawFrame,
     TTSStoppedFrame,
     TTSTextFrame,
+    UserTurnInferenceCompletedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -41,6 +42,7 @@ from pipecat_sprag.common import SPRAG_BASE_URL
 from pipecat_sprag.llm import SpragLLMService
 from pipecat_sprag.stt import SpragSTTService
 from pipecat_sprag.tts import SpragTTSService
+from pipecat_sprag.turns import SpragTurnDetector
 
 pytestmark = [
     pytest.mark.live,
@@ -213,3 +215,22 @@ async def test_voice_agent_answers_a_spoken_question() -> None:
     reply = " ".join(f.text for f in down if isinstance(f, TTSTextFrame)).lower()
     assert "everest" in reply
     assert sum(len(f.audio) for f in down if isinstance(f, TTSAudioRawFrame)) > 24000 * 2
+
+
+async def test_turn_detector_ends_a_spoken_turn() -> None:
+    turns_url = BASE_URL.replace("https://", "wss://") + "/turns"
+    detector = SpragTurnDetector(url=turns_url)
+    await detector.set_agent_text("What can I help you with today?")
+    audio = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=4.0)
+    down, up = await run_until(
+        detector,
+        audio,
+        lambda down, up: (
+            any(isinstance(f, (UserTurnInferenceCompletedFrame)) for f in down)
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        between=0.01,
+        timeout=60,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    assert sum(isinstance(f, UserTurnInferenceCompletedFrame) for f in down) == 1

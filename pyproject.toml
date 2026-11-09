@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-sprag"
-version = "0.1.0"
-description = "Sprag speech and language models for Pipecat: Rhythm STT, Symphony LLM, and Chorus TTS"
+version = "0.2.0.dev1"
+description = "Sprag speech and language models for Pipecat: Rhythm STT, Symphony LLM, Chorus TTS, and turn detection"
 readme = "README.md"
 license = "BSD-2-Clause"
 requires-python = ">=3.11"
 authors = [{ name = "Sprag AI Inc." }]
-keywords = ["pipecat", "sprag", "voice", "ai", "stt", "tts", "llm"]
+keywords = ["pipecat", "sprag", "voice", "ai", "stt", "tts", "llm", "turn-detection"]
 dependencies = ["pipecat-ai>=1.8,<2"]
 
 [project.urls]

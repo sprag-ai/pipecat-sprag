@@ -9,6 +9,7 @@ This integration is maintained by Sprag.
 | `SpragSTTService` | `pipecat_sprag.stt` | Rhythm (speech to text) |
 | `SpragLLMService` | `pipecat_sprag.llm` | Symphony (LLM) |
 | `SpragTTSService` | `pipecat_sprag.tts` | Chorus (text to speech) |
+| `SpragTurnDetector`, `SpragTurnAnalyzer` | `pipecat_sprag.turns` | Sprag Turns (end of turn) |
 
 ## Installation
 
@@ -41,6 +42,55 @@ pipeline = Pipeline(
 - **`SpragTTSService`** streams Chorus speech over Sprag's streaming speech socket (`wss://api.sprag.ai/v1/audio/speech`), one sentence at a time. It defaults to the `chorus` model and the `wade` voice; the available voices are listed in [voice presets](https://sprag.ai/docs/tts/voices/presets).
 
 Each service takes `settings=<Service>.Settings(...)` for its model and other options, and `api_key=` if you don't use the `SPRAG_API_KEY` environment variable.
+
+## Turn detection
+
+Sprag's turn model reads the caller's audio, plus what your agent last said, and decides when the caller has finished their turn. It streams over Sprag's turns socket (`wss://api.sprag.ai/v1/turns`). You can use it in either of two ways.
+
+**`SpragTurnDetector`: the model ends the turn.** Place the detector after the transport input, and end user turns on its signal with Pipecat's `ExternalUserTurnCompletionStopStrategy`:
+
+```python
+from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
+from pipecat.turns.user_stop import ExternalUserTurnCompletionStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnDetector
+
+turns = SpragTurnDetector()
+user_params = LLMUserAggregatorParams(
+    user_turn_strategies=UserTurnStrategies(stop=[ExternalUserTurnCompletionStopStrategy()])
+)
+
+pipeline = Pipeline(
+    [
+        transport.input(),
+        turns,
+        stt,
+        user_aggregator,
+        llm,
+        tts,
+        transport.output(),
+        assistant_aggregator,
+    ]
+)
+worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(turns)])
+```
+
+**`SpragTurnAnalyzer`: a drop-in turn analyzer.** It takes the place of `LocalSmartTurnAnalyzerV3`. Like other streaming analyzers, it reports the turn complete as soon as the model ends it:
+
+```python
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnAnalyzer
+
+analyzer = SpragTurnAnalyzer()
+stop = [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)]
+worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(analyzer)])
+```
+
+`SpragAgentTextObserver` gives the model the agent's last reply as context. Without it, the model judges the caller's audio alone. Both classes take `params=SpragTurnParams(...)`:
+
+- `eot_threshold`: the end-of-turn probability that ends the turn. Default `0.6`.
+- `min_silence_ms`: the silence a turn needs before the model can end it. Default `200`.
+- `eot_timeout_ms`: the silence that ends the turn whatever the model scores. Default `3000`.
 
 ## Example
 

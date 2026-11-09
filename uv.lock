@@ -2239,7 +2239,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-sprag"
-version = "0.1.0"
+version = "0.2.0.dev1"
 source = { editable = "." }
 dependencies = [
     { name = "pipecat-ai" },
