@@ -22,25 +22,33 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSStoppedFrame,
     TTSTextFrame,
+    UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.metrics.metrics import LLMUsageMetricsData
+from pipecat.metrics.metrics import LLMUsageMetricsData, TurnMetricsData
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.tests.utils import run_test
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from pipecat_sprag.common import SPRAG_BASE_URL
 from pipecat_sprag.llm import SpragLLMService
 from pipecat_sprag.stt import SpragSTTService
 from pipecat_sprag.tts import SpragTTSService
+from pipecat_sprag.turns import SpragTurnAnalyzer, SpragTurnDetector
 
 pytestmark = [
     pytest.mark.live,
@@ -107,6 +115,16 @@ def _audio_frames(pcm: bytes, trailing_silence_s: float = 0.0) -> list[Frame]:
     return [
         InputAudioRawFrame(audio=pcm[i : i + step], sample_rate=24000, num_channels=1)
         for i in range(0, len(pcm), step)
+    ]
+
+
+def _turn_metrics(down: list[Frame], processor: str) -> list[TurnMetricsData]:
+    return [
+        d
+        for f in down
+        if isinstance(f, MetricsFrame)
+        for d in f.data
+        if isinstance(d, TurnMetricsData) and d.processor.startswith(processor)
     ]
 
 
@@ -213,3 +231,75 @@ async def test_voice_agent_answers_a_spoken_question() -> None:
     reply = " ".join(f.text for f in down if isinstance(f, TTSTextFrame)).lower()
     assert "everest" in reply
     assert sum(len(f.audio) for f in down if isinstance(f, TTSAudioRawFrame)) > 24000 * 2
+
+
+async def test_turn_detector_proposes_the_end_of_a_spoken_turn() -> None:
+    turns_url = BASE_URL.replace("https://", "wss://") + "/turns"
+    detector = SpragTurnDetector(url=turns_url)
+    await detector.set_agent_text("What can I help you with today?")
+    speech = _audio_frames(_speech_pcm(PHRASE))
+    silence = _audio_frames(b"", trailing_silence_s=4.0)
+    down, up = await run_until(
+        detector,
+        [
+            lambda down, up: detector._session.connected,
+            VADUserStartedSpeakingFrame(),
+            *speech,
+            VADUserStoppedSpeakingFrame(),
+            *silence,
+        ],
+        lambda down, up: (
+            bool(_turn_metrics(down, "SpragTurnDetector"))
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        params=PipelineParams(audio_in_sample_rate=24000, enable_metrics=True),
+        between=0.02,
+        timeout=60,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    assert sum(isinstance(f, ProposedUserStoppedSpeakingFrame) for f in down) == 1
+    verdicts = _turn_metrics(down, "SpragTurnDetector")
+    assert len(verdicts) == 1 and verdicts[0].e2e_processing_time_ms > 0
+
+
+async def test_turn_analyzer_ends_a_spoken_turn() -> None:
+    transcription_url = BASE_URL.replace("https://", "wss://") + "/audio/transcriptions"
+    analyzer = SpragTurnAnalyzer(url=BASE_URL.replace("https://", "wss://") + "/turns")
+    await analyzer.set_agent_text("What can I help you with today?")
+    context = LLMContext()
+    user_aggregator, _ = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)]
+            )
+        ),
+    )
+    lead_in = _audio_frames(b"", trailing_silence_s=0.5)
+    speech = _audio_frames(_speech_pcm(PHRASE))
+    silence = _audio_frames(b"", trailing_silence_s=4.0)
+    down, up = await run_until(
+        Pipeline([SpragSTTService(base_url=transcription_url), user_aggregator]),
+        [
+            *lead_in,
+            lambda down, up: analyzer._session.connected,
+            VADUserStartedSpeakingFrame(),
+            *speech,
+            VADUserStoppedSpeakingFrame(),
+            *silence,
+        ],
+        lambda down, up: (
+            any(isinstance(f, LLMContextFrame) for f in down)
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        between=0.02,
+        timeout=60,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    assert sum(isinstance(f, UserStoppedSpeakingFrame) for f in down) == 1
+    verdicts = _turn_metrics(down, "SpragTurnAnalyzer")
+    assert len(verdicts) == 1 and verdicts[0].is_complete
+    assert verdicts[0].e2e_processing_time_ms > 0
+    heard = " ".join(str(m.get("content")) for m in context.get_messages()).lower()
+    assert "tide came in slowly" in heard

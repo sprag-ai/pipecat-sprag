@@ -2239,7 +2239,7 @@ wheels = [
 
 [[package]]
 name = "pipecat-sprag"
-version = "0.1.0"
+version = "0.2.0.dev1"
 source = { editable = "." }
 dependencies = [
     { name = "pipecat-ai" },
@@ -2261,7 +2261,7 @@ examples = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pipecat-ai", specifier = ">=1.8,<2" }]
+requires-dist = [{ name = "pipecat-ai", specifier = ">=1.12,<2" }]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2274,7 +2274,7 @@ dev = [
     { name = "ruff", specifier = ">=0.8" },
 ]
 examples = [
-    { name = "pipecat-ai", extras = ["daily", "runner", "webrtc"], specifier = ">=1.8,<2" },
+    { name = "pipecat-ai", extras = ["daily", "runner", "webrtc"], specifier = ">=1.12,<2" },
     { name = "python-dotenv", specifier = ">=1.0" },
 ]
 
