@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pipecat.frames.frames import Frame, ProposedUserStoppedSpeakingFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.stt import OpenAIRealtimeSTTService, OpenAIRealtimeSTTSettings
 
 from pipecat_sprag.common import SPRAG_TRANSCRIPTION_URL, resolve_api_key
@@ -19,7 +21,9 @@ class SpragSTTService(OpenAIRealtimeSTTService):
     """Streaming transcription with Rhythm over Sprag's streaming transcription socket.
 
     By default the pipeline's own VAD decides when a turn ends. Pass
-    ``turn_detection={"type": "server_vad"}`` to have Sprag detect turns instead.
+    ``turn_detection={"type": "server_vad"}`` to have Sprag detect turns instead, or
+    ``commit_on_turn_end=True`` to transcribe each turn when a turn model such as
+    ``SpragTurnDetector`` proposes its end.
 
     Unlike the LLM and TTS services, it sends no ``X-Sprag-Integration`` header: Pipecat's
     realtime STT connects with a fixed set of headers.
@@ -34,6 +38,7 @@ class SpragSTTService(OpenAIRealtimeSTTService):
         api_key: str | None = None,
         base_url: str = SPRAG_TRANSCRIPTION_URL,
         turn_detection: dict[str, Any] | Literal[False] | None = False,
+        commit_on_turn_end: bool = False,
         settings: SpragSTTSettings | None = None,
         **kwargs: Any,
     ) -> None:
@@ -46,6 +51,8 @@ class SpragSTTService(OpenAIRealtimeSTTService):
             turn_detection: ``False`` (the default) leaves turn detection to the
                 pipeline's VAD. A dict such as ``{"type": "server_vad"}`` enables
                 Sprag's server-side VAD.
+            commit_on_turn_end: Whether a ``ProposedUserStoppedSpeakingFrame`` commits the
+                audio for transcription. Applies only without server-side VAD.
             settings: Runtime-updatable settings. The model defaults to ``rhythm``.
             **kwargs: Additional arguments passed to OpenAIRealtimeSTTService.
         """
@@ -60,3 +67,19 @@ class SpragSTTService(OpenAIRealtimeSTTService):
             settings=default_settings,
             **kwargs,
         )
+        self._commit_on_turn_end = commit_on_turn_end
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        """Process a frame, committing the audio when a proposed turn end arrives.
+
+        Args:
+            frame: The frame to process.
+            direction: The frame's direction.
+        """
+        await super().process_frame(frame, direction)
+        if (
+            self._commit_on_turn_end
+            and not self._server_vad_enabled
+            and isinstance(frame, ProposedUserStoppedSpeakingFrame)
+        ):
+            await self._commit_audio_buffer()

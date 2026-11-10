@@ -11,6 +11,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -143,3 +144,22 @@ def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SPRAG_API_KEY", raising=False)
     with pytest.raises(ValueError, match="SPRAG_API_KEY"):
         SpragSTTService()
+
+
+@pytest.mark.parametrize("commit_on_turn_end", [True, False])
+async def test_a_proposed_turn_end_commits_the_audio_when_enabled(
+    transcription: tuple[_TranscriptionServer, str], commit_on_turn_end: bool
+) -> None:
+    server, url = transcription
+    stt = SpragSTTService(api_key="test-key", base_url=url, commit_on_turn_end=commit_on_turn_end)
+    audio = [InputAudioRawFrame(audio=SILENCE, sample_rate=24000, num_channels=1)] * 10
+    down, _ = await run_until(
+        stt,
+        [*audio, ProposedUserStoppedSpeakingFrame(), *audio],
+        lambda down, up: _transcribed(down, up) or not commit_on_turn_end,
+        params=PipelineParams(audio_in_sample_rate=24000),
+        between=0.01,
+    )
+    finals = [f.text for f in down if isinstance(f, TranscriptionFrame)]
+    assert finals == (["hello there"] if commit_on_turn_end else [])
+    assert len(server.events("input_audio_buffer.commit")) == (1 if commit_on_turn_end else 0)

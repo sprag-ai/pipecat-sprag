@@ -14,7 +14,6 @@ from typing import Any
 
 from dotenv import load_dotenv
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -28,7 +27,9 @@ from pipecat.runner.utils import create_transport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.daily.transport import DailyParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
-from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+from pipecat.turns.user_start import ExternalUserTurnStartStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from pipecat_sprag.llm import SpragLLMService
@@ -47,7 +48,7 @@ transport_params = {
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     turns = SpragTurnDetector(params=SpragTurnParams(eot_threshold=0.6, eot_timeout_ms=3000))
-    stt = SpragSTTService()
+    stt = SpragSTTService(commit_on_turn_end=True)
     llm = SpragLLMService(
         settings=SpragLLMService.Settings(
             system_instruction=(
@@ -62,9 +63,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # The VAD tells Rhythm when to finalize a transcript; the turn model decides the turn.
-            vad_analyzer=SileroVADAnalyzer(),
-            user_turn_strategies=ExternalUserTurnStrategies(),
+            user_turn_strategies=UserTurnStrategies(
+                start=[ExternalUserTurnStartStrategy()],
+                stop=[ExternalUserTurnStopStrategy(timeout=0.1)],
+            ),
         ),
     )
     pipeline = Pipeline(

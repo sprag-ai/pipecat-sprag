@@ -1,6 +1,7 @@
 """A Sprag voice agent behind a Sprag-branded browser client, for recording a demo.
 
-Rhythm transcribes, Symphony answers, and Chorus speaks:
+Rhythm transcribes, Symphony answers, Chorus speaks, and Sprag's turn model decides when the
+caller has finished:
 
     SPRAG_API_KEY=... uv run examples/demo.py
 
@@ -8,12 +9,12 @@ Then open http://localhost:7860.
 """
 
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -27,11 +28,15 @@ from pipecat.runner.run import app, main
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_start import ExternalUserTurnStartStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from pipecat_sprag.llm import SpragLLMService
 from pipecat_sprag.stt import SpragSTTService
 from pipecat_sprag.tts import SpragTTSService
+from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnDetector
 
 load_dotenv(override=True)
 
@@ -50,7 +55,8 @@ async def bot(runner_args: RunnerArguments) -> None:
         runner_args,
         {"webrtc": lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True)},
     )
-    stt = SpragSTTService()
+    turns = SpragTurnDetector()
+    stt = SpragSTTService(commit_on_turn_end=True)
     llm = SpragLLMService(
         settings=SpragLLMService.Settings(
             system_instruction=(
@@ -65,11 +71,17 @@ async def bot(runner_args: RunnerArguments) -> None:
     context = LLMContext()
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[ExternalUserTurnStartStrategy()],
+                stop=[ExternalUserTurnStopStrategy(timeout=0.1)],
+            ),
+        ),
     )
     pipeline = Pipeline(
         [
             transport.input(),
+            turns,
             stt,
             user_aggregator,
             llm,
@@ -82,9 +94,18 @@ async def bot(runner_args: RunnerArguments) -> None:
         pipeline,
         params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
+        observers=[SpragAgentTextObserver(turns)],
     )
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
     await runner.add_workers(worker)
+
+    @turns.event_handler("on_turn_update")
+    async def on_turn_update(detector: SpragTurnDetector, event: dict[str, Any]) -> None:
+        logger.debug(f"p_eot {event['p_eot']:.2f} after {event['silence_ms']} ms of silence")
+
+    @turns.event_handler("on_turn_ended")
+    async def on_turn_ended(detector: SpragTurnDetector, event: dict[str, Any]) -> None:
+        logger.info(f"Turn ended: {event}")
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi: RTVIProcessor) -> None:
