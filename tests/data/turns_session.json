@@ -1,25 +1,4 @@
 {
- "client": [
-  {
-   "session": {
-    "eot_threshold": 0.6,
-    "eot_timeout_ms": 1500
-   },
-   "type": "session.update"
-  },
-  {
-   "agent_text": "What can I help you with today?",
-   "type": "context.update"
-  },
-  {
-   "audio_frames": 400,
-   "frame_bytes": 640,
-   "total_bytes": 256000
-  },
-  {
-   "type": "session.close"
-  }
- ],
  "server": [
   {
    "session": {

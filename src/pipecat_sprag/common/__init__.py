@@ -9,6 +9,7 @@ SPRAG_BASE_URL = "https://api.sprag.ai/v1"
 SPRAG_TRANSCRIPTION_URL = "wss://api.sprag.ai/v1/audio/transcriptions"
 SPRAG_SPEECH_URL = "wss://api.sprag.ai/v1/audio/speech"
 SPRAG_TURNS_URL = "wss://api.sprag.ai/v1/turns"
+SPRAG_TURNS_MODEL = "sprag-turns"
 ATTRIBUTION_HEADERS = {"X-Sprag-Integration": f"pipecat/{__version__}"}
 
 

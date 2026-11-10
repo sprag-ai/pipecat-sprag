@@ -22,11 +22,11 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
+    ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSStoppedFrame,
     TTSTextFrame,
-    UserTurnInferenceCompletedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -217,20 +217,20 @@ async def test_voice_agent_answers_a_spoken_question() -> None:
     assert sum(len(f.audio) for f in down if isinstance(f, TTSAudioRawFrame)) > 24000 * 2
 
 
-async def test_turn_detector_ends_a_spoken_turn() -> None:
+async def test_turn_detector_proposes_the_end_of_a_spoken_turn() -> None:
     turns_url = BASE_URL.replace("https://", "wss://") + "/turns"
     detector = SpragTurnDetector(url=turns_url)
     await detector.set_agent_text("What can I help you with today?")
     audio = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=4.0)
     down, up = await run_until(
         detector,
-        audio,
+        [lambda down, up: detector._session.connected, *audio],
         lambda down, up: (
-            any(isinstance(f, (UserTurnInferenceCompletedFrame)) for f in down)
+            any(isinstance(f, ProposedUserStoppedSpeakingFrame) for f in down)
             or any(isinstance(f, ErrorFrame) for f in up)
         ),
         between=0.01,
         timeout=60,
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
-    assert sum(isinstance(f, UserTurnInferenceCompletedFrame) for f in down) == 1
+    assert sum(isinstance(f, ProposedUserStoppedSpeakingFrame) for f in down) == 1

@@ -11,7 +11,7 @@ license = "BSD-2-Clause"
 requires-python = ">=3.11"
 authors = [{ name = "Sprag AI Inc." }]
 keywords = ["pipecat", "sprag", "voice", "ai", "stt", "tts", "llm", "turn-detection"]
-dependencies = ["pipecat-ai>=1.8,<2"]
+dependencies = ["pipecat-ai>=1.12,<2"]
 
 [project.urls]
 Homepage = "https://sprag.ai"
@@ -26,7 +26,7 @@ include = ["src/pipecat_sprag", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependency-groups]
 examples = [
-    "pipecat-ai[daily,runner,webrtc]>=1.8,<2",
+    "pipecat-ai[daily,runner,webrtc]>=1.12,<2",
     "python-dotenv>=1.0",
 ]
 dev = [

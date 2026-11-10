@@ -10,18 +10,18 @@ from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.metrics.metrics import MetricsData, TurnMetricsData
 
-from pipecat_sprag.common import SPRAG_TURNS_URL, resolve_api_key
-from pipecat_sprag.turns.detector import RECONNECT_INTERVAL_SECS
-from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession
+from pipecat_sprag.common import SPRAG_TURNS_MODEL, SPRAG_TURNS_URL, resolve_api_key
+from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession, error_message
 
 
 class SpragTurnAnalyzer(BaseTurnAnalyzer):
     """Streams the caller's audio to Sprag's turn model; the turn is complete on its ``turn.ended``.
 
-    Pass it as ``TurnAnalyzerUserTurnStopStrategy(turn_analyzer=...)``. It is a streaming
-    analyzer: ``append_audio`` returns ``COMPLETE`` once the model has ended the turn, and
-    ``analyze_end_of_turn`` reports the state as of its call. The analyzer sees no agent text
-    of its own; call ``set_agent_text`` with what the agent last said, for example from
+    Pass it as ``TurnAnalyzerUserTurnStopStrategy(turn_analyzer=...)``, one analyzer per
+    pipeline. It is a streaming analyzer: ``append_audio`` returns ``COMPLETE`` once the model
+    has ended the turn, and ``analyze_end_of_turn`` keeps reporting ``COMPLETE`` until the turn
+    is cleared or the model opens a new one. The analyzer sees no agent text of its own; call
+    ``set_agent_text`` with what the agent last said, for example from
     ``SpragAgentTextObserver``.
     """
 
@@ -30,7 +30,7 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         *,
         api_key: str | None = None,
         url: str = SPRAG_TURNS_URL,
-        model: str = "sprag-turns",
+        model: str = SPRAG_TURNS_MODEL,
         params: SpragTurnParams | None = None,
         connect_timeout: float = 10.0,
         sample_rate: int | None = None,
@@ -42,7 +42,7 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             url: The Sprag turns WebSocket URL.
             model: The turn model.
             params: The model's thresholds. Defaults to ``SpragTurnParams()``.
-            connect_timeout: Seconds the session may take to open and be configured.
+            connect_timeout: Seconds the session may take to open, and again to be configured.
             sample_rate: The input sample rate; defaults to the pipeline's.
         """
         super().__init__(sample_rate=sample_rate)
@@ -55,11 +55,10 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             on_event=self._on_event,
             connect_timeout=connect_timeout,
         )
-        self._audio: asyncio.Queue[bytes] | None = None
-        self._pump: asyncio.Task[None] | None = None
-        self._agent_text = ""
+        self._connection: asyncio.Task[None] | None = None
         self._speech_triggered = False
         self._turn_ended = False
+        self._turn_reported = False
         self._last_metrics: TurnMetricsData | None = None
         self._speech_stopped_at: float | None = None
 
@@ -73,15 +72,13 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         """The model's thresholds."""
         return self._params
 
-    def set_agent_text(self, text: str) -> None:
+    async def set_agent_text(self, text: str) -> None:
         """Set what the agent last said, which the model reads as context for later readings.
 
         Args:
             text: The agent's last utterance; empty clears it.
         """
-        self._agent_text = text
-        if self._session.connected:
-            asyncio.get_running_loop().create_task(self._session.send_agent_text(text))
+        await self._session.send_agent_text(text)
 
     def append_audio(self, buffer: bytes, is_speech: bool) -> EndOfTurnState:
         """Queue caller audio for the model and report whether it has ended the turn.
@@ -93,27 +90,28 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         Returns:
             ``COMPLETE`` once after the model ends a turn, otherwise ``INCOMPLETE``.
         """
-        if self._audio is None:
-            self._audio = asyncio.Queue()
-            self._pump = asyncio.get_running_loop().create_task(self._run(self._audio))
+        if self._connection is None:
+            self._connection = asyncio.get_running_loop().create_task(
+                self._session.maintain(self._report_error)
+            )
         if is_speech:
             self._speech_stopped_at = None
         elif self._speech_stopped_at is None:
             self._speech_stopped_at = time.perf_counter()
-        self._audio.put_nowait(buffer)
-        if self._turn_ended:
-            self._turn_ended = False
+        self._session.push_audio(buffer, self.sample_rate)
+        if self._turn_ended and not self._turn_reported:
+            self._turn_reported = True
             return EndOfTurnState.COMPLETE
         return EndOfTurnState.INCOMPLETE
 
     async def analyze_end_of_turn(self) -> tuple[EndOfTurnState, MetricsData | None]:
-        """Report whether the model has ended the turn, with its last reading's metrics.
+        """Report whether the model has ended the turn, with its ending reading's metrics.
 
         Returns:
-            The end-of-turn state and the metrics of the reading that ended the turn, if any.
+            ``COMPLETE`` from the model's ``turn.ended`` until ``clear`` or its next
+            ``turn.started``, and the ending reading's metrics on the first call that reports it.
         """
         state = EndOfTurnState.COMPLETE if self._turn_ended else EndOfTurnState.INCOMPLETE
-        self._turn_ended = False
         metrics, self._last_metrics = self._last_metrics, None
         return state, metrics
 
@@ -121,38 +119,31 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         """Forget the current turn's state; the session stays open."""
         self._speech_triggered = False
         self._turn_ended = False
+        self._turn_reported = False
+        self._last_metrics = None
         self._speech_stopped_at = None
 
     async def cleanup(self) -> None:
-        """Close the session."""
-        if self._pump is not None:
-            self._pump.cancel()
-            await asyncio.gather(self._pump, return_exceptions=True)
-            self._pump = None
+        """Close the session; the next ``append_audio`` opens a new one."""
+        connection, self._connection = self._connection, None
+        if connection is not None:
+            connection.cancel()
+            await asyncio.gather(connection, return_exceptions=True)
         await self._session.close()
+        self.clear()
 
-    async def _run(self, audio: asyncio.Queue[bytes]) -> None:
-        next_connect = 0.0
-        while True:
-            buffer = await audio.get()
-            if not self._session.connected and time.monotonic() >= next_connect:
-                next_connect = time.monotonic() + RECONNECT_INTERVAL_SECS
-                try:
-                    await self._session.connect()
-                except Exception as e:
-                    logger.error(f"Error connecting to Sprag turns: {e}")
-                    continue
-                if self._agent_text:
-                    await self._session.send_agent_text(self._agent_text)
-            await self._session.send_audio(buffer, self.sample_rate)
+    async def _report_error(self, error: Exception) -> None:
+        logger.error(f"Error connecting to Sprag turns: {error}")
 
     async def _on_event(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type == "turn.started":
+            self.clear()
             self._speech_triggered = True
         elif event_type == "turn.ended":
             self._speech_triggered = False
             self._turn_ended = True
+            self._turn_reported = False
             stopped = self._speech_stopped_at
             self._last_metrics = TurnMetricsData(
                 processor="SpragTurnAnalyzer",
@@ -163,5 +154,4 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
                 else 0.0,
             )
         elif event_type == "error":
-            error = event.get("error") or {}
-            logger.error(f"Sprag turns error: {error.get('message') or error.get('code')}")
+            logger.error(f"Sprag turns error: {error_message(event)}")
