@@ -126,4 +126,4 @@ def _mono(frame: InputAudioRawFrame) -> bytes:
     if frame.num_channels == 1:
         return frame.audio
     samples = np.frombuffer(frame.audio, dtype=np.int16).reshape(-1, frame.num_channels)
-    return samples.mean(axis=1).astype(np.int16).tobytes()
+    return bytes(samples.mean(axis=1).astype(np.int16).tobytes())
