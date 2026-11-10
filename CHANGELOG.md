@@ -4,7 +4,8 @@
 
 ### Added
 
-- `examples/demo.py`: the voice agent behind a Sprag-branded browser client.
+- `SpragSTTService(commit_on_turn_end=True)`: transcribes each turn when `SpragTurnDetector` ends it, so turn detection needs no VAD.
+- `examples/demo.py`: the voice agent behind a Sprag-branded browser client, with turns decided by Sprag's turn model.
 - `examples/turn_detection.py`: a voice agent whose turns are decided by Sprag's turn model.
 - `SpragTurnDetector`: Sprag's turn model as a processor that proposes the user's turn boundaries, for `ExternalUserTurnStrategies`, reporting `TurnMetricsData` for each turn.
 - `SpragTurnAnalyzer`: Sprag's turn model as a streaming turn analyzer.

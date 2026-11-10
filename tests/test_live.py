@@ -41,7 +41,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.tests.utils import run_test
-from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_start import ExternalUserTurnStartStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy, TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from pipecat_sprag.common import SPRAG_BASE_URL
@@ -303,3 +304,38 @@ async def test_turn_analyzer_ends_a_spoken_turn() -> None:
     assert verdicts[0].e2e_processing_time_ms > 0
     heard = " ".join(str(m.get("content")) for m in context.get_messages()).lower()
     assert "tide came in slowly" in heard
+
+
+async def test_turn_detector_ends_a_turn_with_its_whole_transcript_without_a_vad() -> None:
+    turns = SpragTurnDetector(url=BASE_URL.replace("https://", "wss://") + "/turns")
+    stt = SpragSTTService(
+        base_url=BASE_URL.replace("https://", "wss://") + "/audio/transcriptions",
+        commit_on_turn_end=True,
+    )
+    context = LLMContext()
+    user_aggregator, _ = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_turn_strategies=UserTurnStrategies(
+                start=[ExternalUserTurnStartStrategy()],
+                stop=[ExternalUserTurnStopStrategy(timeout=0.1)],
+            )
+        ),
+    )
+    speech = _audio_frames(_speech_pcm(PHRASE))
+    silence = _audio_frames(b"", trailing_silence_s=4.0)
+    down, up = await run_until(
+        Pipeline([turns, stt, user_aggregator]),
+        [lambda down, up: turns._session.connected, *speech, *silence],
+        lambda down, up: (
+            any(isinstance(f, LLMContextFrame) for f in down)
+            or any(isinstance(f, ErrorFrame) for f in up)
+        ),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        between=0.02,
+        timeout=60,
+    )
+    assert not [f for f in up if isinstance(f, ErrorFrame)]
+    assert sum(isinstance(f, UserStoppedSpeakingFrame) for f in down) == 1
+    user = [m for m in context.get_messages() if m.get("role") == "user"]
+    assert len(user) == 1 and "tide came in slowly" in str(user[0]["content"]).lower()

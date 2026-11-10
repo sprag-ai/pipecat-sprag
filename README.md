@@ -37,7 +37,7 @@ pipeline = Pipeline(
 )
 ```
 
-- **`SpragSTTService`** streams audio to Rhythm over Sprag's streaming transcription socket (`wss://api.sprag.ai/v1/audio/transcriptions`). By default your pipeline's VAD decides when a turn ends; pass `turn_detection={"type": "server_vad"}` to let Sprag detect turns instead.
+- **`SpragSTTService`** streams audio to Rhythm over Sprag's streaming transcription socket (`wss://api.sprag.ai/v1/audio/transcriptions`). By default your pipeline's VAD decides when a turn ends; pass `turn_detection={"type": "server_vad"}` to let Sprag detect turns instead, or `commit_on_turn_end=True` to transcribe each turn when `SpragTurnDetector` ends it.
 - **`SpragLLMService`** runs Symphony through Sprag's chat completions API, with function calling and token usage metrics.
 - **`SpragTTSService`** streams Chorus speech over Sprag's streaming speech socket (`wss://api.sprag.ai/v1/audio/speech`), one sentence at a time. It defaults to the `chorus` model and the `wade` voice; the available voices are listed in [voice presets](https://sprag.ai/docs/tts/voices/presets).
 
@@ -47,15 +47,24 @@ Each service takes `settings=<Service>.Settings(...)` for its model and other op
 
 Sprag's turn model reads the caller's audio, plus what your agent last said, and decides when the caller has finished their turn. It streams over Sprag's turns socket (`wss://api.sprag.ai/v1/turns`). You can use it in either of two ways.
 
-**`SpragTurnDetector`: the model decides the turn.** Place the detector after the transport input, and let the user aggregator follow it with Pipecat's `ExternalUserTurnStrategies`. The model's `turn.started` starts the user's turn and interrupts the bot, and its `turn.ended` ends the turn once the STT's transcript has arrived, as with an STT service that detects turns itself:
+**`SpragTurnDetector`: the model decides the turn.** Place the detector after the transport input, and let the user aggregator follow it with Pipecat's external turn strategies. The model's `turn.started` starts the user's turn and interrupts the bot. Its `turn.ended` commits the turn's audio to Rhythm, and the turn ends once that transcript arrives. No VAD is needed:
 
 ```python
 from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
-from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+from pipecat.turns.user_start import ExternalUserTurnStartStrategy
+from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat_sprag.stt import SpragSTTService
 from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnDetector
 
 turns = SpragTurnDetector()
-user_params = LLMUserAggregatorParams(user_turn_strategies=ExternalUserTurnStrategies())
+stt = SpragSTTService(commit_on_turn_end=True)
+user_params = LLMUserAggregatorParams(
+    user_turn_strategies=UserTurnStrategies(
+        start=[ExternalUserTurnStartStrategy()],
+        stop=[ExternalUserTurnStopStrategy(timeout=0.1)],
+    )
+)
 
 pipeline = Pipeline(
     [
@@ -71,6 +80,8 @@ pipeline = Pipeline(
 )
 worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(turns)])
 ```
+
+The stop strategy's `timeout` is how long it waits for further transcripts after one arrives; Pipecat's default is 0.5 s.
 
 **`SpragTurnAnalyzer`: a drop-in turn analyzer.** It takes the place of `LocalSmartTurnAnalyzerV3`, alongside your VAD. Like other streaming analyzers, it reports the turn complete as soon as the model ends it. Create one analyzer for each pipeline:
 
