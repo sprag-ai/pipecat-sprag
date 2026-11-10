@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import numpy as np
@@ -11,10 +12,14 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InputAudioRawFrame,
+    MetricsFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     StartFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from pipecat_sprag.common import SPRAG_TURNS_MODEL, SPRAG_TURNS_URL, resolve_api_key
@@ -30,7 +35,7 @@ class SpragTurnDetector(FrameProcessor):
     once the STT's transcript arrives. Every frame passes through unchanged, and the
     connection runs in the background so audio is never held back while it opens. Its
     ``on_turn_update`` event receives each end-of-turn reading and its ``on_turn_ended`` event
-    each closed turn.
+    each closed turn. With metrics enabled, it pushes a ``TurnMetricsData`` for each closed turn.
     """
 
     def __init__(
@@ -63,6 +68,8 @@ class SpragTurnDetector(FrameProcessor):
             connect_timeout=connect_timeout,
         )
         self._connection: asyncio.Task[None] | None = None
+        self._model = model
+        self._speech_stopped_at: float | None = None
         self._register_event_handler("on_turn_update")
         self._register_event_handler("on_turn_ended")
 
@@ -91,6 +98,10 @@ class SpragTurnDetector(FrameProcessor):
             await self._stop()
         elif isinstance(frame, InputAudioRawFrame):
             self._session.push_audio(_mono(frame), frame.sample_rate)
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._speech_stopped_at = None
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._speech_stopped_at = time.perf_counter()
         await self.push_frame(frame, direction)
 
     async def cleanup(self) -> None:
@@ -103,6 +114,25 @@ class SpragTurnDetector(FrameProcessor):
             await self.cancel_task(self._connection)
             self._connection = None
         await self._session.close()
+
+    def can_generate_metrics(self) -> bool:
+        """Report that the detector produces turn metrics."""
+        return True
+
+    async def _push_turn_metrics(self, event: dict[str, Any]) -> None:
+        stopped, self._speech_stopped_at = self._speech_stopped_at, None
+        if not self.metrics_enabled:
+            return
+        metrics = TurnMetricsData(
+            processor=self.name,
+            model=self._model,
+            is_complete=True,
+            probability=float(event.get("p_eot") or 0.0),
+            e2e_processing_time_ms=(time.perf_counter() - stopped) * 1000
+            if stopped is not None
+            else 0.0,
+        )
+        await self.push_frame(MetricsFrame(data=[metrics]))
 
     async def _report_error(self, error: Exception) -> None:
         await self.push_error(
@@ -117,6 +147,7 @@ class SpragTurnDetector(FrameProcessor):
             await self._call_event_handler("on_turn_update", event)
         elif event_type == "turn.ended":
             await self.broadcast_frame(ProposedUserStoppedSpeakingFrame)
+            await self._push_turn_metrics(event)
             await self._call_event_handler("on_turn_ended", event)
         elif event_type == "error":
             await self.push_error(error_msg=f"Sprag turns error: {error_message(event)}")

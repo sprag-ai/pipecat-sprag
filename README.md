@@ -83,7 +83,7 @@ stop = [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)]
 worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(analyzer)])
 ```
 
-`SpragAgentTextObserver` gives the model the words of the agent's last reply that were played, as context. Without it, the model judges the caller's audio alone. Both classes connect in the background and reconnect if the socket drops. Audio that arrives while they are not connected is not sent. Both take `params=SpragTurnParams(...)`:
+`SpragAgentTextObserver` gives the model the words of the agent's last reply that were played, as context. Without it, the model judges the caller's audio alone. Both classes connect in the background and reconnect if the socket drops. Audio that arrives while they are not connected is not sent. Each turn the model ends is reported as a `TurnMetricsData` with the model's end-of-turn probability and the time from the VAD's last speech stop. The detector reports it when the pipeline enables metrics. Both take `params=SpragTurnParams(...)`:
 
 - `eot_threshold`: the end-of-turn probability that ends the turn. Default `0.6`.
 - `min_silence_ms`: the silence a turn needs before the model can end it. Default `200`.

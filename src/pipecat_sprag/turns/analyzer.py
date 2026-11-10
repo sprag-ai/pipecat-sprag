@@ -138,7 +138,9 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
     async def _on_event(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type == "turn.started":
+            stopped = self._speech_stopped_at
             self.clear()
+            self._speech_stopped_at = stopped
             self._speech_triggered = True
         elif event_type == "turn.ended":
             self._speech_triggered = False

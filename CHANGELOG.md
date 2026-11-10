@@ -6,7 +6,7 @@
 
 - `examples/demo.py`: the voice agent behind a Sprag-branded browser client.
 - `examples/turn_detection.py`: a voice agent whose turns are decided by Sprag's turn model.
-- `SpragTurnDetector`: Sprag's turn model as a processor that proposes the user's turn boundaries, for `ExternalUserTurnStrategies`.
+- `SpragTurnDetector`: Sprag's turn model as a processor that proposes the user's turn boundaries, for `ExternalUserTurnStrategies`, reporting `TurnMetricsData` for each turn.
 - `SpragTurnAnalyzer`: Sprag's turn model as a streaming turn analyzer.
 - `SpragAgentTextObserver`: gives either one the played words of the agent's last reply as context.
 

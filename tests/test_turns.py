@@ -16,11 +16,16 @@ from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
     InputAudioRawFrame,
+    MetricsFrame,
     ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TTSTextFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
+from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.observers.base_observer import FramePushed
+from pipecat.pipeline.worker import PipelineParams
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
@@ -185,6 +190,45 @@ async def test_the_detector_proposes_the_turn_boundaries_the_model_reports(turns
     assert server.of_type("session.close")
 
 
+def _turn_metrics(frames: list[Frame]) -> list[TurnMetricsData]:
+    return [
+        d
+        for f in frames
+        if isinstance(f, MetricsFrame)
+        for d in f.data
+        if isinstance(d, TurnMetricsData)
+    ]
+
+
+@pytest.mark.parametrize("enable_metrics", [True, False])
+async def test_the_detector_reports_turn_metrics_when_enabled(turns, enable_metrics) -> None:
+    _, url = await turns()
+    detector = SpragTurnDetector(api_key="sk-test", url=url)
+    down, _ = await run_until(
+        detector,
+        [
+            lambda down, up: detector._session.connected,
+            VADUserStartedSpeakingFrame(),
+            *_audio(5),
+            VADUserStoppedSpeakingFrame(),
+            *_audio(20),
+        ],
+        lambda down, up: _proposed_stop(down, up) and (not enable_metrics or _turn_metrics(down)),
+        params=PipelineParams(enable_metrics=enable_metrics),
+        between=0.01,
+    )
+    metrics = _turn_metrics(down)
+    if not enable_metrics:
+        assert metrics == []
+        return
+    assert len(metrics) == 1
+    assert metrics[0].processor == detector.name
+    assert metrics[0].model == "sprag-turns"
+    assert metrics[0].is_complete
+    assert metrics[0].probability == SESSION["server"][-1]["p_eot"]
+    assert metrics[0].e2e_processing_time_ms > 0
+
+
 async def test_the_detector_passes_audio_on_while_the_server_stalls(turns) -> None:
     _, url = await turns(stall=True)
     detector = SpragTurnDetector(api_key="sk-test", url=url, connect_timeout=30)
@@ -304,6 +348,8 @@ async def test_the_analyzer_keeps_the_turn_complete_until_it_is_cleared(turns) -
         state, metrics = await analyzer.analyze_end_of_turn()
         assert state is EndOfTurnState.COMPLETE
         assert metrics is not None and metrics.probability == SESSION["server"][-1]["p_eot"]
+        # the fake server replays the turn after ten 20 ms frames of silence
+        assert metrics.e2e_processing_time_ms > 50
         state, metrics = await analyzer.analyze_end_of_turn()
         assert state is EndOfTurnState.COMPLETE and metrics is None
         assert not analyzer.speech_triggered

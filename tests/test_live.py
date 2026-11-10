@@ -118,6 +118,16 @@ def _audio_frames(pcm: bytes, trailing_silence_s: float = 0.0) -> list[Frame]:
     ]
 
 
+def _turn_metrics(down: list[Frame], processor: str) -> list[TurnMetricsData]:
+    return [
+        d
+        for f in down
+        if isinstance(f, MetricsFrame)
+        for d in f.data
+        if isinstance(d, TurnMetricsData) and d.processor.startswith(processor)
+    ]
+
+
 def _transcript(down: list[Frame]) -> str:
     return " ".join(f.text for f in down if isinstance(f, TranscriptionFrame)).lower()
 
@@ -227,19 +237,29 @@ async def test_turn_detector_proposes_the_end_of_a_spoken_turn() -> None:
     turns_url = BASE_URL.replace("https://", "wss://") + "/turns"
     detector = SpragTurnDetector(url=turns_url)
     await detector.set_agent_text("What can I help you with today?")
-    audio = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=4.0)
+    speech = _audio_frames(_speech_pcm(PHRASE))
+    silence = _audio_frames(b"", trailing_silence_s=4.0)
     down, up = await run_until(
         detector,
-        [lambda down, up: detector._session.connected, *audio],
+        [
+            lambda down, up: detector._session.connected,
+            VADUserStartedSpeakingFrame(),
+            *speech,
+            VADUserStoppedSpeakingFrame(),
+            *silence,
+        ],
         lambda down, up: (
-            any(isinstance(f, ProposedUserStoppedSpeakingFrame) for f in down)
+            bool(_turn_metrics(down, "SpragTurnDetector"))
             or any(isinstance(f, ErrorFrame) for f in up)
         ),
-        between=0.01,
+        params=PipelineParams(audio_in_sample_rate=24000, enable_metrics=True),
+        between=0.02,
         timeout=60,
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
     assert sum(isinstance(f, ProposedUserStoppedSpeakingFrame) for f in down) == 1
+    verdicts = _turn_metrics(down, "SpragTurnDetector")
+    assert len(verdicts) == 1 and verdicts[0].e2e_processing_time_ms > 0
 
 
 async def test_turn_analyzer_ends_a_spoken_turn() -> None:
@@ -278,13 +298,8 @@ async def test_turn_analyzer_ends_a_spoken_turn() -> None:
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
     assert sum(isinstance(f, UserStoppedSpeakingFrame) for f in down) == 1
-    verdicts = [
-        d
-        for f in down
-        if isinstance(f, MetricsFrame)
-        for d in f.data
-        if isinstance(d, TurnMetricsData) and d.processor == "SpragTurnAnalyzer"
-    ]
+    verdicts = _turn_metrics(down, "SpragTurnAnalyzer")
     assert len(verdicts) == 1 and verdicts[0].is_complete
+    assert verdicts[0].e2e_processing_time_ms > 0
     heard = " ".join(str(m.get("content")) for m in context.get_messages()).lower()
     assert "tide came in slowly" in heard
