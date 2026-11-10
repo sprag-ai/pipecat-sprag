@@ -163,7 +163,12 @@ async def test_the_detector_proposes_the_turn_boundaries_the_model_reports(turns
     async def _on_ended(processor: SpragTurnDetector, event: dict[str, Any]) -> None:
         ended.append(event)
 
-    down, up = await run_until(detector, _audio(40), _proposed_stop, between=0.01)
+    down, up = await run_until(
+        detector,
+        _audio(40),
+        lambda down, up: _proposed_stop(down, up) and _count(down, InputAudioRawFrame) == 40,
+        between=0.01,
+    )
     assert _count(down, ProposedUserStartedSpeakingFrame) == 1
     assert _count(down, ProposedUserStoppedSpeakingFrame) == 1
     assert _count(up, ProposedUserStoppedSpeakingFrame) == 1
