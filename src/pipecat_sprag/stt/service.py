@@ -83,3 +83,12 @@ class SpragSTTService(OpenAIRealtimeSTTService):
             and isinstance(frame, ProposedUserStoppedSpeakingFrame)
         ):
             await self._commit_audio_buffer()
+
+    async def _commit_audio_buffer(self) -> None:
+        self.request_finalize()
+        await super()._commit_audio_buffer()
+
+    async def _handle_transcription_completed(self, evt: dict[str, Any]) -> None:
+        # Rhythm transcribes each commit in one pass, so its completed transcript is final.
+        self.confirm_finalize()
+        await super()._handle_transcription_completed(evt)
