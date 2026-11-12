@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `SpragSTTService` marks each committed turn's transcript as finalized, so a turn analyzer such as `SpragTurnAnalyzer` or Smart Turn ends the turn when the transcript arrives instead of waiting for the STT timeout.
+
 ## 0.2.0.dev1
 
 ### Added

@@ -146,6 +146,21 @@ def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         SpragSTTService()
 
 
+@pytest.mark.parametrize("turn_end", ["vad", "proposed"])
+async def test_the_transcript_of_a_committed_turn_is_finalized(
+    transcription: tuple[_TranscriptionServer, str], turn_end: str
+) -> None:
+    server, url = transcription
+    stt = SpragSTTService(api_key="test-key", base_url=url, commit_on_turn_end=True)
+    audio = [InputAudioRawFrame(audio=SILENCE, sample_rate=24000, num_channels=1)] * 10
+    frames = _utterance() if turn_end == "vad" else [*audio, ProposedUserStoppedSpeakingFrame()]
+    down, _ = await run_until(
+        stt, frames, _transcribed, params=PipelineParams(audio_in_sample_rate=24000), between=0.01
+    )
+    finals = [f for f in down if isinstance(f, TranscriptionFrame)]
+    assert [f.finalized for f in finals] == [True]
+
+
 @pytest.mark.parametrize("commit_on_turn_end", [True, False])
 async def test_a_proposed_turn_end_commits_the_audio_when_enabled(
     transcription: tuple[_TranscriptionServer, str], commit_on_turn_end: bool
