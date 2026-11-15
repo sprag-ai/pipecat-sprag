@@ -180,7 +180,7 @@ async def test_the_detector_proposes_the_turn_boundaries_the_model_reports(turns
     assert _count(down, InputAudioRawFrame) == 40
     assert ended == [SESSION["server"][-1]]
     handshake = server.handshakes[0]
-    assert handshake.query["model"] == "sprag-turns"
+    assert handshake.query["model"] == "sprag-eot"
     assert handshake.headers["Authorization"] == "Bearer sk-test"
     assert server.of_type("session.update")[0]["session"] == {
         "eot_threshold": 0.6,
@@ -223,7 +223,7 @@ async def test_the_detector_reports_turn_metrics_when_enabled(turns, enable_metr
         return
     assert len(metrics) == 1
     assert metrics[0].processor == detector.name
-    assert metrics[0].model == "sprag-turns"
+    assert metrics[0].model == "sprag-eot"
     assert metrics[0].is_complete
     assert metrics[0].probability == SESSION["server"][-1]["p_eot"]
     assert metrics[0].e2e_processing_time_ms > 0
