@@ -1,6 +1,6 @@
 """A Sprag voice agent whose turns are decided by Sprag's turn model.
 
-Rhythm hears, Symphony thinks, Chorus speaks, and ``sprag-turns`` decides when the caller has
+Rhythm hears, Symphony thinks, Chorus speaks, and ``sprag-eot`` decides when the caller has
 finished. Run it with Pipecat's development runner and open the printed URL in a browser:
 
     SPRAG_API_KEY=... uv run examples/turn_detection.py

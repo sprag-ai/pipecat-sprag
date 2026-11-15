@@ -10,7 +10,7 @@ from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.metrics.metrics import MetricsData, TurnMetricsData
 
-from pipecat_sprag.common import SPRAG_TURNS_MODEL, SPRAG_TURNS_URL, resolve_api_key
+from pipecat_sprag.common import SPRAG_EOT_MODEL, SPRAG_TURNS_URL, resolve_api_key
 from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession, error_message
 
 
@@ -30,7 +30,7 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         *,
         api_key: str | None = None,
         url: str = SPRAG_TURNS_URL,
-        model: str = SPRAG_TURNS_MODEL,
+        model: str = SPRAG_EOT_MODEL,
         params: SpragTurnParams | None = None,
         connect_timeout: float = 10.0,
         sample_rate: int | None = None,
