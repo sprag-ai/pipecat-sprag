@@ -81,6 +81,10 @@ class SpragTurnDetector(FrameProcessor):
         """
         await self._session.send_agent_text(text)
 
+    async def end_turn(self) -> None:
+        """End the caller's open turn now; the model answers ``turn.ended``, reason ``client``."""
+        await self._session.send_turn_end()
+
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Stream input audio to the model and pass every frame on.
 
@@ -127,7 +131,7 @@ class SpragTurnDetector(FrameProcessor):
             processor=self.name,
             model=self._model,
             is_complete=True,
-            probability=float(event.get("p_eot") or 0.0),
+            probability=float(event.get("probability") or 0.0),
             e2e_processing_time_ms=(time.perf_counter() - stopped) * 1000
             if stopped is not None
             else 0.0,

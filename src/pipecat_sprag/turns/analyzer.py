@@ -80,6 +80,10 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         """
         await self._session.send_agent_text(text)
 
+    async def end_turn(self) -> None:
+        """End the caller's open turn now; the model answers ``turn.ended``, reason ``client``."""
+        await self._session.send_turn_end()
+
     def append_audio(self, buffer: bytes, is_speech: bool) -> EndOfTurnState:
         """Queue caller audio for the model and report whether it has ended the turn.
 
@@ -150,7 +154,7 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             self._last_metrics = TurnMetricsData(
                 processor="SpragTurnAnalyzer",
                 is_complete=True,
-                probability=float(event.get("p_eot") or 0.0),
+                probability=float(event.get("probability") or 0.0),
                 e2e_processing_time_ms=(time.perf_counter() - stopped) * 1000
                 if stopped is not None
                 else 0.0,

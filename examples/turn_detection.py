@@ -92,7 +92,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     @turns.event_handler("on_turn_update")
     async def on_turn_update(detector: SpragTurnDetector, event: dict[str, Any]) -> None:
-        logger.debug(f"p_eot {event['p_eot']:.2f} after {event['silence_ms']} ms of silence")
+        logger.debug(f"probability {event['probability']:.2f} at {event['silence']:.2f} s silence")
 
     @turns.event_handler("on_turn_ended")
     async def on_turn_ended(detector: SpragTurnDetector, event: dict[str, Any]) -> None:

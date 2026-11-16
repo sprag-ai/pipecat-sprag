@@ -225,7 +225,7 @@ async def test_the_detector_reports_turn_metrics_when_enabled(turns, enable_metr
     assert metrics[0].processor == detector.name
     assert metrics[0].model == "sprag-eot"
     assert metrics[0].is_complete
-    assert metrics[0].probability == SESSION["server"][-1]["p_eot"]
+    assert metrics[0].probability == SESSION["server"][-1]["probability"]
     assert metrics[0].e2e_processing_time_ms > 0
 
 
@@ -275,6 +275,32 @@ async def test_the_detector_sends_the_agent_text_as_context(turns) -> None:
     assert server.of_type("context.update") == [
         {"type": "context.update", "agent_text": "What can I help you with today?"}
     ]
+
+
+async def test_the_detector_asks_the_server_to_end_the_turn(turns) -> None:
+    server, url = await turns(replay_after=10**9)
+    detector = SpragTurnDetector(api_key="sk-test", url=url)
+    sent: list[asyncio.Task[None]] = []
+
+    def end_turn_once_connected(down: list[Frame], up: list[Frame]) -> bool:
+        if not detector._session.connected:
+            return False
+        if not sent:
+            sent.append(asyncio.get_running_loop().create_task(detector.end_turn()))
+        return True
+
+    await run_until(
+        detector,
+        [end_turn_once_connected, *_audio(2)],
+        lambda down, up: bool(server.of_type("turn.end")),
+        between=0.01,
+    )
+    assert server.of_type("turn.end") == [{"type": "turn.end"}]
+
+
+async def test_ending_the_turn_while_disconnected_sends_nothing() -> None:
+    detector = SpragTurnDetector(api_key="sk-test", url="ws://127.0.0.1:9/v1/turns")
+    await detector.end_turn()
 
 
 async def test_the_detector_reconnects_and_resends_the_context(turns) -> None:
@@ -347,7 +373,7 @@ async def test_the_analyzer_keeps_the_turn_complete_until_it_is_cleared(turns) -
         assert analyzer.append_audio(FRAME_16K, is_speech=False) is EndOfTurnState.INCOMPLETE
         state, metrics = await analyzer.analyze_end_of_turn()
         assert state is EndOfTurnState.COMPLETE
-        assert metrics is not None and metrics.probability == SESSION["server"][-1]["p_eot"]
+        assert metrics is not None and metrics.probability == SESSION["server"][-1]["probability"]
         # the fake server replays the turn after ten 20 ms frames of silence
         assert metrics.e2e_processing_time_ms > 50
         state, metrics = await analyzer.analyze_end_of_turn()
