@@ -39,7 +39,7 @@ from pipecat_sprag.turns import (
 )
 from pipecat_sprag.turns import session as turns_session
 
-# One /v1/turns session recorded from the sprag-turns model: every server event it sent.
+# One /v1/turns session recorded from the sprag-eot model: every server event it sent.
 SESSION = json.loads((Path(__file__).parent / "data" / "turns_session.json").read_text())
 FRAME_16K = b"\x01\x00" * 320  # 20 ms at 16 kHz
 
