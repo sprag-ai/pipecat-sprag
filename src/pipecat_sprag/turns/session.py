@@ -178,6 +178,16 @@ class TurnsSession:
         except ConnectionClosed:
             self._drop(websocket)
 
+    async def send_turn_end(self) -> None:
+        """Ask the server to end the open turn now; a no-op while disconnected or with no turn."""
+        websocket = self._websocket
+        if websocket is None:
+            return
+        try:
+            await websocket.send(json.dumps({"type": "turn.end"}))
+        except ConnectionClosed:
+            self._drop(websocket)
+
     async def close(self) -> None:
         """End the session and close the socket; a later ``connect`` opens a new one."""
         websocket, self._websocket = self._websocket, None
