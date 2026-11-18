@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.utils.errors import ErrorCategory
 
 from pipecat_sprag.common import SPRAG_EOT_MODEL, SPRAG_TURNS_URL, resolve_api_key
 from pipecat_sprag.turns.events import (
@@ -31,7 +32,7 @@ from pipecat_sprag.turns.events import (
     TurnStarted,
     TurnsUsage,
 )
-from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession
+from pipecat_sprag.turns.session import SessionConfigRefusedError, SpragTurnParams, TurnsSession
 
 
 class SpragTurnDetector(FrameProcessor):
@@ -84,7 +85,10 @@ class SpragTurnDetector(FrameProcessor):
 
     @property
     def usage(self) -> TurnsUsage | None:
-        """The usage of the last session the detector closed, if the server reported it."""
+        """The usage in the ``session.closed`` of the detector's latest connection.
+
+        None while that connection is open, and when it ended without ``session.closed``.
+        """
         return self._session.usage
 
     async def set_agent_text(self, text: str) -> None:
@@ -153,6 +157,13 @@ class SpragTurnDetector(FrameProcessor):
         await self.push_frame(MetricsFrame(data=[metrics]))
 
     async def _report_error(self, error: Exception) -> None:
+        if isinstance(error, SessionConfigRefusedError):
+            await self.push_error(
+                error_msg=f"Sprag turns refused the detector's params; not reconnecting: {error}",
+                exception=error,
+                category=ErrorCategory.INVALID_REQUEST,
+            )
+            return
         await self.push_error(
             error_msg=f"Error connecting to Sprag turns: {error}", exception=error
         )

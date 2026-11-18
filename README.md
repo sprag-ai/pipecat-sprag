@@ -98,10 +98,12 @@ worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(analyzer)])
 
 - `eot_threshold`: the end-of-turn probability that ends the turn. Default `0.6`.
 - `eager_eot_threshold`: a lower probability that reports an eager end, a sign the turn is probably over, before `eot_threshold` is reached. Default `None`, which reports none.
-- `min_silence_ms`: the silence a turn needs before the model can end it. Default `200`.
-- `eot_timeout_ms`: the silence that ends the turn whatever the model scores. Default `3000`.
+- `min_silence_ms`: the silence a turn needs before the model can end it, from 0 to 10000 and below `eot_timeout_ms`. Default `200`.
+- `eot_timeout_ms`: the silence that ends the turn whatever the model scores, from 100 to 60000. Default `3000`.
 
-The analyzer needs a sample rate before it receives audio. A pipeline sets it when it starts; outside one, pass `sample_rate=` or call `set_sample_rate()`, or `append_audio` raises `RuntimeError`.
+`eot_threshold` and `eager_eot_threshold` run from 0 to 1, and `eager_eot_threshold` can't exceed `eot_threshold`. `SpragTurnParams` raises a pydantic `ValidationError` for values outside these bounds, the same bounds the server applies. If the server refuses the params anyway, neither class reconnects: the detector pushes an `ErrorFrame` whose exception is a `SessionConfigRefusedError` and marks itself unusable, and the analyzer logs the error.
+
+The analyzer needs a sample rate before it receives audio. A pipeline sets it when it starts; outside one, pass `sample_rate=` or call `set_sample_rate()`. Without one, the first `append_audio` raises `RuntimeError`, and later calls drop the audio and return `INCOMPLETE`.
 
 ### Turn events
 
@@ -110,13 +112,13 @@ Both classes report each of the model's events to an event handler, with the eve
 | Handler | Event | When |
 | --- | --- | --- |
 | `on_turn_started` | `TurnStarted` | the model opens a turn |
-| `on_turn_update` | `TurnUpdate` | a reading during a pause doesn't end the turn |
-| `on_eager_end` | `TurnEagerEnd` | a reading reaches `eager_eot_threshold` |
+| `on_turn_update` | `TurnUpdate` | every reading during a pause, including one that ends the turn |
+| `on_eager_end` | `TurnEagerEnd` | the first reading in a pause at or above `eager_eot_threshold`, at most once per pause; `on_turn_ended` follows when the same reading ends the turn |
 | `on_turn_resumed` | `TurnResumed` | the caller speaks again after an eager end |
 | `on_turn_ended` | `TurnEnded` | the turn ends; `reason` is `model`, `timeout`, or `client` |
 | `on_session_closed` | `SessionClosed` | the session closes, with its `usage` |
 
-Every turn event has `turn_index`, `audio_window_start`, and `audio_window_end`, in seconds from the session's first audio. Readings add `probability` and `silence`. An eager end lets you start preparing a reply early and drop it if the caller resumes:
+Every turn event has `turn_index`, counted from 0, and `audio_window_start` and `audio_window_end`, in seconds from the connection's first audio byte. All three restart when the session reconnects. Readings add `probability` and `silence`. An eager end lets you start preparing a reply early and drop it if the caller resumes:
 
 ```python
 from pipecat_sprag.turns import SpragTurnDetector, SpragTurnParams, TurnEagerEnd, TurnResumed
@@ -136,9 +138,9 @@ async def on_turn_resumed(detector: SpragTurnDetector, event: TurnResumed) -> No
 
 ### Connection and usage
 
-Both classes connect in the background and reconnect if the socket drops. Audio that arrives before the session is configured is buffered and sent first, so the start of the caller's first turn isn't lost. After a dropped connection, only the audio the lost connection didn't send is replayed, because the new session's clock starts again. The buffer keeps the latest 8 seconds, the most audio a reading scores, and drops anything older.
+Both classes connect in the background and reconnect if the socket drops. Audio that arrives before the session is configured is buffered and sent first, so the start of the caller's first turn isn't lost. After a dropped connection, only the audio the lost connection didn't send is replayed, because the new session's clock starts again. The buffer keeps the latest 8 seconds, the most audio a reading scores, and drops anything older, including the older part of a single longer chunk.
 
-When the session closes, it waits up to 2 seconds for the server's `session.closed`. Events that arrive in that time still reach their handlers, and the session's usage is then available as `usage` on the detector or analyzer, as well as in `on_session_closed`. `usage.invocations` counts model invocations, one for the first reading of each pause. The detector closes without waiting when its pipeline is cancelled, so a cancelled pipeline reports no usage.
+When the session closes, it waits up to 2 seconds for the server's `session.closed`. Events that arrive in that time still reach their handlers, and the connection's usage is then available as `usage` on the detector or analyzer, as well as in `on_session_closed`. `usage` describes only the latest connection: it is `None` while that connection is open, and stays `None` when it closes without `session.closed`. `usage.invocations` counts model invocations, one for the first reading of each pause. The detector closes without waiting when its pipeline is cancelled, so a cancelled pipeline reports no usage.
 
 ## Example
 

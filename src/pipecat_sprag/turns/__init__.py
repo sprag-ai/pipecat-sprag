@@ -12,10 +12,11 @@ from pipecat_sprag.turns.events import (
     TurnsUsage,
     TurnUpdate,
 )
-from pipecat_sprag.turns.session import SpragTurnParams
+from pipecat_sprag.turns.session import SessionConfigRefusedError, SpragTurnParams
 
 __all__ = [
     "SessionClosed",
+    "SessionConfigRefusedError",
     "SpragAgentTextObserver",
     "SpragTurnAnalyzer",
     "SpragTurnDetector",

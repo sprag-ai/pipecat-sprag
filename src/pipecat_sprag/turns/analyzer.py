@@ -19,16 +19,17 @@ from pipecat_sprag.turns.events import (
     TurnStarted,
     TurnsUsage,
 )
-from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession
+from pipecat_sprag.turns.session import SessionConfigRefusedError, SpragTurnParams, TurnsSession
 
 
 class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
     """Streams the caller's audio to Sprag's turn model; the turn is complete on its ``turn.ended``.
 
     Pass it as ``TurnAnalyzerUserTurnStopStrategy(turn_analyzer=...)``, one analyzer per
-    pipeline. It is a streaming analyzer: ``append_audio`` returns ``COMPLETE`` once the model
-    has ended the turn, and ``analyze_end_of_turn`` keeps reporting ``COMPLETE`` until the turn
-    is cleared or the model opens a new one. The analyzer sees no agent text of its own; call
+    pipeline. It is a streaming analyzer: ``append_audio`` returns ``COMPLETE`` once after the
+    model ends a turn, even if the model has opened the next turn by then, and
+    ``analyze_end_of_turn`` keeps reporting ``COMPLETE`` until the turn is cleared or the model
+    opens a new one. The analyzer sees no agent text of its own; call
     ``set_agent_text`` with what the agent last said, for example from
     ``SpragAgentTextObserver``. Its ``on_turn_started``, ``on_turn_update``, ``on_eager_end``,
     ``on_turn_resumed``, ``on_turn_ended`` and ``on_session_closed`` events receive the
@@ -69,7 +70,8 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
         self._connection: asyncio.Task[None] | None = None
         self._speech_triggered = False
         self._turn_ended = False
-        self._turn_reported = False
+        self._end_unreported = False
+        self._missing_rate_reported = False
         self._last_metrics: TurnMetricsData | None = None
         self._speech_stopped_at: float | None = None
         for event_name in EVENT_HANDLERS.values():
@@ -87,7 +89,10 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
 
     @property
     def usage(self) -> TurnsUsage | None:
-        """The usage of the last session ``cleanup`` closed, if the server reported it."""
+        """The usage in the ``session.closed`` of the analyzer's latest connection.
+
+        None while that connection is open, and when it ended without ``session.closed``.
+        """
         return self._session.usage
 
     async def set_agent_text(self, text: str) -> None:
@@ -110,12 +115,16 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
             is_speech: Whether the pipeline's VAD marks the audio as speech.
 
         Returns:
-            ``COMPLETE`` once after the model ends a turn, otherwise ``INCOMPLETE``.
+            ``COMPLETE`` on the first call after the model ends a turn, otherwise ``INCOMPLETE``.
 
         Raises:
-            RuntimeError: The analyzer has no sample rate yet.
+            RuntimeError: The analyzer has no sample rate, on the first such call; later calls
+                without one drop the audio and return ``INCOMPLETE``.
         """
         if not self.sample_rate:
+            if self._missing_rate_reported:
+                return EndOfTurnState.INCOMPLETE
+            self._missing_rate_reported = True
             raise RuntimeError(
                 "SpragTurnAnalyzer has no sample rate: pass sample_rate=, or let the pipeline "
                 "set it with set_sample_rate() before appending audio"
@@ -129,8 +138,8 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
         elif self._speech_stopped_at is None:
             self._speech_stopped_at = time.perf_counter()
         self._session.push_audio(buffer, self.sample_rate)
-        if self._turn_ended and not self._turn_reported:
-            self._turn_reported = True
+        if self._end_unreported:
+            self._end_unreported = False
             return EndOfTurnState.COMPLETE
         return EndOfTurnState.INCOMPLETE
 
@@ -139,7 +148,8 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
 
         Returns:
             ``COMPLETE`` from the model's ``turn.ended`` until ``clear`` or its next
-            ``turn.started``, and the ending reading's metrics on the first call that reports it.
+            ``turn.started``, and the latest ended turn's metrics on the first call after its
+            ``turn.ended``, unless ``clear`` came first.
         """
         state = EndOfTurnState.COMPLETE if self._turn_ended else EndOfTurnState.INCOMPLETE
         metrics, self._last_metrics = self._last_metrics, None
@@ -149,7 +159,7 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
         """Forget the current turn's state; the session stays open."""
         self._speech_triggered = False
         self._turn_ended = False
-        self._turn_reported = False
+        self._end_unreported = False
         self._last_metrics = None
         self._speech_stopped_at = None
 
@@ -164,18 +174,19 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
         await BaseObject.cleanup(self)
 
     async def _report_error(self, error: Exception) -> None:
+        if isinstance(error, SessionConfigRefusedError):
+            logger.error(f"Sprag turns refused the analyzer's params; not reconnecting: {error}")
+            return
         logger.error(f"Error connecting to Sprag turns: {error}")
 
     async def _on_event(self, event: TurnsServerEvent) -> None:
         if isinstance(event, TurnStarted):
-            stopped = self._speech_stopped_at
-            self.clear()
-            self._speech_stopped_at = stopped
             self._speech_triggered = True
+            self._turn_ended = False
         elif isinstance(event, TurnEnded):
             self._speech_triggered = False
             self._turn_ended = True
-            self._turn_reported = False
+            self._end_unreported = True
             stopped = self._speech_stopped_at
             self._last_metrics = TurnMetricsData(
                 processor="SpragTurnAnalyzer",

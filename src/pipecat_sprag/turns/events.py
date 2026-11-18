@@ -10,12 +10,16 @@ from pydantic import BaseModel, Field, TypeAdapter
 class TurnEvent(BaseModel):
     """Fields every turn event carries."""
 
-    turn_index: int = Field(description="the caller's turn in the session, counted from 0")
+    turn_index: int = Field(
+        description="the caller's turn, counted from 0 on each connection; restarts on reconnect"
+    )
     audio_window_start: float = Field(
-        description="seconds since the session's first audio byte where the turn's speech began"
+        description="seconds from the connection's first audio byte to where the turn's speech "
+        "began; restarts on reconnect"
     )
     audio_window_end: float = Field(
-        description="seconds since the session's first audio byte that the event refers to"
+        description="seconds from the connection's first audio byte to the point the event "
+        "refers to; restarts on reconnect"
     )
 
 
@@ -35,13 +39,16 @@ class TurnReading(TurnEvent):
 
 
 class TurnUpdate(TurnReading):
-    """A reading that did not end the turn."""
+    """One reading; every reading is sent as one, including a reading ``turn.ended`` follows."""
 
     type: Literal["turn.update"] = Field(description="the event type")
 
 
 class TurnEagerEnd(TurnReading):
-    """A reading that reached ``eager_eot_threshold`` but not ``eot_threshold``."""
+    """The pause's first reading at or above ``eager_eot_threshold``; at most one per pause.
+
+    When the same reading ends the turn, ``turn.ended`` follows it.
+    """
 
     type: Literal["turn.eager_end"] = Field(description="the event type")
 
@@ -69,16 +76,16 @@ class TurnEnded(TurnEvent):
 
 
 class TurnsUsage(BaseModel):
-    """What a turns session was billed for."""
+    """What a turns connection was billed for."""
 
     invocations: int = Field(description="model invocations: the first reading of each pause")
 
 
 class SessionClosed(BaseModel):
-    """The session ended after the client's ``session.close``."""
+    """The connection's session ended after the client's ``session.close``."""
 
     type: Literal["session.closed"] = Field(description="the event type")
-    usage: TurnsUsage = Field(description="the session's usage")
+    usage: TurnsUsage = Field(description="the usage over this connection")
 
 
 class TurnsErrorDetail(BaseModel):
