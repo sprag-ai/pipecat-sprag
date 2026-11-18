@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
 
 from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnAnalyzer, EndOfTurnState
 from pipecat.metrics.metrics import MetricsData, TurnMetricsData
+from pipecat.utils.base_object import BaseObject
 
 from pipecat_sprag.common import SPRAG_EOT_MODEL, SPRAG_TURNS_URL, resolve_api_key
-from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession, error_message
+from pipecat_sprag.turns.events import (
+    EVENT_HANDLERS,
+    TurnEnded,
+    TurnsError,
+    TurnsServerEvent,
+    TurnStarted,
+    TurnsUsage,
+)
+from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession
 
 
-class SpragTurnAnalyzer(BaseTurnAnalyzer):
+class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
     """Streams the caller's audio to Sprag's turn model; the turn is complete on its ``turn.ended``.
 
     Pass it as ``TurnAnalyzerUserTurnStopStrategy(turn_analyzer=...)``, one analyzer per
@@ -22,7 +30,9 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
     has ended the turn, and ``analyze_end_of_turn`` keeps reporting ``COMPLETE`` until the turn
     is cleared or the model opens a new one. The analyzer sees no agent text of its own; call
     ``set_agent_text`` with what the agent last said, for example from
-    ``SpragAgentTextObserver``.
+    ``SpragAgentTextObserver``. Its ``on_turn_started``, ``on_turn_update``, ``on_eager_end``,
+    ``on_turn_resumed``, ``on_turn_ended`` and ``on_session_closed`` events receive the
+    analyzer and the server's event.
     """
 
     def __init__(
@@ -45,7 +55,8 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             connect_timeout: Seconds the session may take to open, and again to be configured.
             sample_rate: The input sample rate; defaults to the pipeline's.
         """
-        super().__init__(sample_rate=sample_rate)
+        BaseTurnAnalyzer.__init__(self, sample_rate=sample_rate)
+        BaseObject.__init__(self)
         self._params = params or SpragTurnParams()
         self._session = TurnsSession(
             api_key=resolve_api_key(api_key),
@@ -61,6 +72,8 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
         self._turn_reported = False
         self._last_metrics: TurnMetricsData | None = None
         self._speech_stopped_at: float | None = None
+        for event_name in EVENT_HANDLERS.values():
+            self._register_event_handler(event_name)
 
     @property
     def speech_triggered(self) -> bool:
@@ -71,6 +84,11 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
     def params(self) -> SpragTurnParams:
         """The model's thresholds."""
         return self._params
+
+    @property
+    def usage(self) -> TurnsUsage | None:
+        """The usage of the last session ``cleanup`` closed, if the server reported it."""
+        return self._session.usage
 
     async def set_agent_text(self, text: str) -> None:
         """Set what the agent last said, which the model reads as context for later readings.
@@ -93,7 +111,15 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
 
         Returns:
             ``COMPLETE`` once after the model ends a turn, otherwise ``INCOMPLETE``.
+
+        Raises:
+            RuntimeError: The analyzer has no sample rate yet.
         """
+        if not self.sample_rate:
+            raise RuntimeError(
+                "SpragTurnAnalyzer has no sample rate: pass sample_rate=, or let the pipeline "
+                "set it with set_sample_rate() before appending audio"
+            )
         if self._connection is None:
             self._connection = asyncio.get_running_loop().create_task(
                 self._session.maintain(self._report_error)
@@ -135,18 +161,18 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             await asyncio.gather(connection, return_exceptions=True)
         await self._session.close()
         self.clear()
+        await BaseObject.cleanup(self)
 
     async def _report_error(self, error: Exception) -> None:
         logger.error(f"Error connecting to Sprag turns: {error}")
 
-    async def _on_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("type")
-        if event_type == "turn.started":
+    async def _on_event(self, event: TurnsServerEvent) -> None:
+        if isinstance(event, TurnStarted):
             stopped = self._speech_stopped_at
             self.clear()
             self._speech_stopped_at = stopped
             self._speech_triggered = True
-        elif event_type == "turn.ended":
+        elif isinstance(event, TurnEnded):
             self._speech_triggered = False
             self._turn_ended = True
             self._turn_reported = False
@@ -154,10 +180,12 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer):
             self._last_metrics = TurnMetricsData(
                 processor="SpragTurnAnalyzer",
                 is_complete=True,
-                probability=float(event.get("probability") or 0.0),
+                probability=event.probability or 0.0,
                 e2e_processing_time_ms=(time.perf_counter() - stopped) * 1000
                 if stopped is not None
                 else 0.0,
             )
-        elif event_type == "error":
-            logger.error(f"Sprag turns error: {error_message(event)}")
+        elif isinstance(event, TurnsError):
+            logger.error(f"Sprag turns error: {event.description}")
+        if event.type in EVENT_HANDLERS:
+            await self._call_event_handler(EVENT_HANDLERS[event.type], event)

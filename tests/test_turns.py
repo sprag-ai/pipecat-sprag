@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -36,8 +37,12 @@ from pipecat_sprag.turns import (
     SpragTurnAnalyzer,
     SpragTurnDetector,
     SpragTurnParams,
+    TurnEnded,
+    TurnsUsage,
 )
 from pipecat_sprag.turns import session as turns_session
+from pipecat_sprag.turns.events import EVENT_HANDLERS
+from pipecat_sprag.turns.session import TurnsSession
 
 # One /v1/turns session recorded from the sprag-eot model: every server event it sent.
 SESSION = json.loads((Path(__file__).parent / "data" / "turns_session.json").read_text())
@@ -45,7 +50,11 @@ FRAME_16K = b"\x01\x00" * 320  # 20 ms at 16 kHz
 
 
 class _TurnsServer:
-    """Replays the recorded session's turn events once ``replay_after`` bytes of audio arrive."""
+    """Replays the recorded session's turn events once ``replay_after`` bytes of audio arrive.
+
+    It answers ``session.close`` like the real server: the ``on_close`` events still in
+    flight, then ``session.closed`` with ``invocations``, unless ``answer_close`` is off.
+    """
 
     def __init__(
         self,
@@ -54,23 +63,38 @@ class _TurnsServer:
         stall: bool = False,
         drop_after: int | None = None,
         before_replay: list[str] | None = None,
+        replay: list[dict[str, Any]] | None = None,
+        configure_delay: float = 0.0,
+        answer_close: bool = True,
+        on_close: list[dict[str, Any]] | None = None,
+        invocations: int = 1,
     ) -> None:
         self.replay_after = replay_after
         self.refuse = refuse
         self.stall = stall
         self.drop_after = drop_after
         self.before_replay = before_replay or []
+        self.replay = replay
+        self.configure_delay = configure_delay
+        self.answer_close = answer_close
+        self.on_close = on_close or []
+        self.invocations = invocations
         self.handshakes: list[web.Request] = []
         self.events: list[dict[str, Any]] = []
         self.audio_bytes = 0
+        self.received: list[bytearray] = []
 
     async def handle(self, request: web.Request) -> web.WebSocketResponse:
         self.handshakes.append(request)
+        audio = bytearray()
+        self.received.append(audio)
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         server_events = list(SESSION["server"])
         await ws.send_json(server_events.pop(0))
         updated = server_events.pop(0)
+        if self.replay is not None:
+            server_events = self.replay
         dropped = len(self.handshakes) > 1 or self.drop_after is None
         received = 0
         replayed = False
@@ -78,6 +102,7 @@ class _TurnsServer:
             if msg.type is WSMsgType.BINARY:
                 self.audio_bytes += len(msg.data)
                 received += len(msg.data)
+                audio.extend(msg.data)
                 if not dropped and self.drop_after is not None and received >= self.drop_after:
                     await ws.close()
                     break
@@ -93,6 +118,7 @@ class _TurnsServer:
             event = json.loads(msg.data)
             self.events.append(event)
             if event["type"] == "session.update" and not self.stall:
+                await asyncio.sleep(self.configure_delay)
                 if self.refuse:
                     await ws.send_json(
                         {
@@ -102,7 +128,12 @@ class _TurnsServer:
                     )
                 else:
                     await ws.send_json(updated)
-            elif event["type"] == "session.close":
+            elif event["type"] == "session.close" and self.answer_close:
+                for in_flight in self.on_close:
+                    await ws.send_json(in_flight)
+                await ws.send_json(
+                    {"type": "session.closed", "usage": {"invocations": self.invocations}}
+                )
                 await ws.close()
         return ws
 
@@ -162,10 +193,10 @@ async def test_the_detector_proposes_the_turn_boundaries_the_model_reports(turns
     detector = SpragTurnDetector(
         api_key="sk-test", url=url, params=SpragTurnParams(eot_timeout_ms=1500)
     )
-    ended: list[dict[str, Any]] = []
+    ended: list[TurnEnded] = []
 
     @detector.event_handler("on_turn_ended")
-    async def _on_ended(processor: SpragTurnDetector, event: dict[str, Any]) -> None:
+    async def _on_ended(processor: SpragTurnDetector, event: TurnEnded) -> None:
         ended.append(event)
 
     down, up = await run_until(
@@ -178,7 +209,7 @@ async def test_the_detector_proposes_the_turn_boundaries_the_model_reports(turns
     assert _count(down, ProposedUserStoppedSpeakingFrame) == 1
     assert _count(up, ProposedUserStoppedSpeakingFrame) == 1
     assert _count(down, InputAudioRawFrame) == 40
-    assert ended == [SESSION["server"][-1]]
+    assert [e.model_dump() for e in ended] == [SESSION["server"][-1]]
     handshake = server.handshakes[0]
     assert handshake.query["model"] == "sprag-eot"
     assert handshake.headers["Authorization"] == "Bearer sk-test"
@@ -415,6 +446,238 @@ async def test_the_analyzer_opens_a_new_session_after_cleanup(turns) -> None:
         assert len(server.handshakes) == 2
     finally:
         await analyzer.cleanup()
+
+
+def _numbered(count: int, start: int = 0) -> list[bytes]:
+    """Return 20 ms 16 kHz frames whose samples hold each frame's number, to check order."""
+    return [(start + i).to_bytes(2, "little") * 320 for i in range(count)]
+
+
+def _session(url: str, events: list[Any] | None = None) -> TurnsSession:
+    async def on_event(event: Any) -> None:
+        if events is not None:
+            events.append(event)
+
+    return TurnsSession(
+        api_key="sk-test", url=url, model="sprag-eot", params=SpragTurnParams(), on_event=on_event
+    )
+
+
+async def test_audio_pushed_before_connecting_is_sent_in_order_once_configured(turns) -> None:
+    server, url = await turns(replay_after=10**9)
+    session = _session(url)
+    frames = _numbered(100)
+    try:
+        for frame in frames:
+            session.push_audio(frame, 16000)
+        await session.connect()
+        await _wait_for(lambda: len(server.received[0]) >= 64000)
+        assert bytes(server.received[0]) == b"".join(frames)
+    finally:
+        await session.close()
+
+
+async def test_audio_buffered_before_connecting_keeps_the_latest_scoring_window(turns) -> None:
+    server, url = await turns(replay_after=10**9)
+    session = _session(url)
+    # ten seconds, of which the eight-second scoring window is kept
+    frames = _numbered(500)
+    try:
+        for frame in frames:
+            session.push_audio(frame, 16000)
+        await session.connect()
+        await _wait_for(lambda: len(server.received[0]) >= 256000)
+        await asyncio.sleep(0.1)
+        assert bytes(server.received[0]) == b"".join(frames[100:])
+    finally:
+        await session.close()
+
+
+async def test_the_analyzer_sends_audio_that_arrives_while_it_connects(turns) -> None:
+    server, url = await turns(replay_after=10**9, configure_delay=0.3)
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url=url)
+    analyzer.set_sample_rate(16000)
+    frames = _numbered(20)
+    try:
+        for frame in frames:
+            analyzer.append_audio(frame, is_speech=True)
+            await asyncio.sleep(0.01)
+        assert server.audio_bytes == 0
+        await _wait_for(lambda: len(server.received[0]) >= 12800)
+        assert bytes(server.received[0]) == b"".join(frames)
+    finally:
+        await analyzer.cleanup()
+
+
+async def test_a_reconnect_replays_only_the_audio_since_the_connection_was_lost(turns) -> None:
+    server, url = await turns(replay_after=10**9, drop_after=6400)
+    session = _session(url)
+    before = _numbered(10)
+    after = _numbered(450, start=10)
+    try:
+        await session.connect()
+        for frame in before:
+            session.push_audio(frame, 16000)
+        await _wait_for(lambda: not session.connected)
+        for frame in after:
+            session.push_audio(frame, 16000)
+        await session.connect()
+        await _wait_for(lambda: len(server.received[1]) >= 256000)
+        await asyncio.sleep(0.1)
+        assert bytes(server.received[0]) == b"".join(before)
+        assert bytes(server.received[1]) == b"".join(after[50:])
+    finally:
+        await session.close()
+
+
+# A v2 session with an eager end the caller talks through, then a model-ended turn.
+EAGER_SESSION = [
+    {"type": "turn.started", "turn_index": 0, "audio_window_start": 1.3, "audio_window_end": 1.3},
+    {
+        "type": "turn.update",
+        "turn_index": 0,
+        "probability": 0.21,
+        "silence": 0.2,
+        "audio_window_start": 1.3,
+        "audio_window_end": 2.9,
+    },
+    {
+        "type": "turn.eager_end",
+        "turn_index": 0,
+        "probability": 0.47,
+        "silence": 0.3,
+        "audio_window_start": 1.3,
+        "audio_window_end": 3.0,
+    },
+    {"type": "turn.resumed", "turn_index": 0, "audio_window_start": 1.3, "audio_window_end": 3.2},
+    {
+        "type": "turn.ended",
+        "turn_index": 0,
+        "reason": "model",
+        "probability": 0.83,
+        "silence": 0.3,
+        "audio_window_start": 1.3,
+        "audio_window_end": 5.1,
+    },
+]
+SESSION_CLOSED = {"type": "session.closed", "usage": {"invocations": 2}}
+HANDLED = [
+    "on_turn_started",
+    "on_turn_update",
+    "on_eager_end",
+    "on_turn_resumed",
+    "on_turn_ended",
+    "on_session_closed",
+]
+
+
+def _record_events(target: SpragTurnAnalyzer | SpragTurnDetector) -> list[tuple[str, Any]]:
+    seen: list[tuple[str, Any]] = []
+    for name in EVENT_HANDLERS.values():
+
+        async def handler(_: object, event: Any, name: str = name) -> None:
+            seen.append((name, event))
+
+        target.add_event_handler(name, handler)
+    return seen
+
+
+def _assert_every_event_handled(seen: list[tuple[str, Any]]) -> None:
+    assert [name for name, _ in seen] == HANDLED
+    events = [event for _, event in seen]
+    assert [type(e).__name__ for e in events] == [
+        "TurnStarted",
+        "TurnUpdate",
+        "TurnEagerEnd",
+        "TurnResumed",
+        "TurnEnded",
+        "SessionClosed",
+    ]
+    assert [e.model_dump() for e in events] == [*EAGER_SESSION, SESSION_CLOSED]
+    assert events[2].probability == 0.47 and events[4].reason == "model"
+    assert events[5].usage == TurnsUsage(invocations=2)
+
+
+async def test_every_event_reaches_the_analyzer_s_handlers(turns) -> None:
+    _, url = await turns(replay=EAGER_SESSION, invocations=2)
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url=url)
+    analyzer.set_sample_rate(16000)
+    seen = _record_events(analyzer)
+    try:
+        await _feed_until_complete(analyzer)
+    finally:
+        await analyzer.cleanup()
+    _assert_every_event_handled(seen)
+    assert analyzer.usage == TurnsUsage(invocations=2)
+
+
+async def test_every_event_reaches_the_detector_s_handlers(turns) -> None:
+    server, url = await turns(replay=EAGER_SESSION, invocations=2)
+    detector = SpragTurnDetector(
+        api_key="sk-test", url=url, params=SpragTurnParams(eager_eot_threshold=0.45)
+    )
+    seen = _record_events(detector)
+    await run_until(
+        detector,
+        _audio(40),
+        lambda down, up: _proposed_stop(down, up) and _count(down, InputAudioRawFrame) == 40,
+        between=0.01,
+    )
+    _assert_every_event_handled(seen)
+    assert detector.usage == TurnsUsage(invocations=2)
+    assert server.of_type("session.update")[0]["session"]["eager_eot_threshold"] == 0.45
+
+
+async def test_cleanup_delivers_in_flight_events_and_the_session_s_usage(turns) -> None:
+    in_flight = dict(EAGER_SESSION[1], audio_window_end=7.0)
+    _, url = await turns(on_close=[in_flight], invocations=3)
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url=url)
+    analyzer.set_sample_rate(16000)
+    seen = _record_events(analyzer)
+    try:
+        await _feed_until_complete(analyzer)
+    finally:
+        await analyzer.cleanup()
+    assert [name for name, _ in seen[-2:]] == ["on_turn_update", "on_session_closed"]
+    assert seen[-2][1].audio_window_end == 7.0
+    assert analyzer.usage == TurnsUsage(invocations=3)
+
+
+async def test_cleanup_returns_promptly_when_the_server_never_closes(
+    turns, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(turns_session, "SESSION_CLOSE_TIMEOUT_SECS", 0.3)
+    server, url = await turns(replay_after=10**9, answer_close=False)
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url=url)
+    analyzer.set_sample_rate(16000)
+    analyzer.append_audio(FRAME_16K, is_speech=True)
+    await _wait_for(lambda: analyzer._session.connected)
+    started = time.perf_counter()
+    await analyzer.cleanup()
+    elapsed = time.perf_counter() - started
+    assert 0.25 <= elapsed < 1.5
+    assert server.of_type("session.close")
+    assert analyzer.usage is None
+
+
+async def test_closing_a_session_that_never_connected_returns_at_once() -> None:
+    session = _session("ws://127.0.0.1:9/v1/turns")
+    session.push_audio(FRAME_16K, 16000)
+    await asyncio.wait_for(session.close(), timeout=0.1)
+    assert session.usage is None
+
+
+async def test_the_analyzer_refuses_audio_before_it_has_a_sample_rate() -> None:
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url="ws://127.0.0.1:9/v1/turns")
+    with pytest.raises(RuntimeError, match="no sample rate"):
+        analyzer.append_audio(FRAME_16K, is_speech=True)
+    assert analyzer._connection is None
+
+
+def test_the_session_refuses_audio_without_a_positive_sample_rate() -> None:
+    session = _session("ws://127.0.0.1:9/v1/turns")
+    with pytest.raises(ValueError, match="sample rate"):
+        session.push_audio(FRAME_16K, 0)
 
 
 class _Target:

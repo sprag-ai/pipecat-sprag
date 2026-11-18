@@ -23,7 +23,15 @@ from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from pipecat_sprag.common import SPRAG_EOT_MODEL, SPRAG_TURNS_URL, resolve_api_key
-from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession, error_message
+from pipecat_sprag.turns.events import (
+    EVENT_HANDLERS,
+    TurnEnded,
+    TurnsError,
+    TurnsServerEvent,
+    TurnStarted,
+    TurnsUsage,
+)
+from pipecat_sprag.turns.session import SpragTurnParams, TurnsSession
 
 
 class SpragTurnDetector(FrameProcessor):
@@ -34,8 +42,9 @@ class SpragTurnDetector(FrameProcessor):
     ``turn.ended`` a ``ProposedUserStoppedSpeakingFrame``, which the user aggregator closes on
     once the STT's transcript arrives. Every frame passes through unchanged, and the
     connection runs in the background so audio is never held back while it opens. Its
-    ``on_turn_update`` event receives each end-of-turn reading and its ``on_turn_ended`` event
-    each closed turn. With metrics enabled, it pushes a ``TurnMetricsData`` for each closed turn.
+    ``on_turn_started``, ``on_turn_update``, ``on_eager_end``, ``on_turn_resumed``,
+    ``on_turn_ended`` and ``on_session_closed`` events receive the detector and the server's
+    event. With metrics enabled, it pushes a ``TurnMetricsData`` for each closed turn.
     """
 
     def __init__(
@@ -70,8 +79,13 @@ class SpragTurnDetector(FrameProcessor):
         self._connection: asyncio.Task[None] | None = None
         self._model = model
         self._speech_stopped_at: float | None = None
-        self._register_event_handler("on_turn_update")
-        self._register_event_handler("on_turn_ended")
+        for event_name in EVENT_HANDLERS.values():
+            self._register_event_handler(event_name)
+
+    @property
+    def usage(self) -> TurnsUsage | None:
+        """The usage of the last session the detector closed, if the server reported it."""
+        return self._session.usage
 
     async def set_agent_text(self, text: str) -> None:
         """Set what the agent last said, which the model reads as context for later readings.
@@ -99,7 +113,7 @@ class SpragTurnDetector(FrameProcessor):
                 self._connection = self.create_task(self._session.maintain(self._report_error))
             return
         if isinstance(frame, (EndFrame, CancelFrame)):
-            await self._stop()
+            await self._stop(wait=isinstance(frame, EndFrame))
         elif isinstance(frame, InputAudioRawFrame):
             self._session.push_audio(_mono(frame), frame.sample_rate)
         elif isinstance(frame, VADUserStartedSpeakingFrame):
@@ -110,20 +124,20 @@ class SpragTurnDetector(FrameProcessor):
 
     async def cleanup(self) -> None:
         """Close the session."""
+        await self._stop(wait=False)
         await super().cleanup()
-        await self._stop()
 
-    async def _stop(self) -> None:
+    async def _stop(self, *, wait: bool) -> None:
         if self._connection is not None:
             await self.cancel_task(self._connection)
             self._connection = None
-        await self._session.close()
+        await self._session.close(wait=wait)
 
     def can_generate_metrics(self) -> bool:
         """Report that the detector produces turn metrics."""
         return True
 
-    async def _push_turn_metrics(self, event: dict[str, Any]) -> None:
+    async def _push_turn_metrics(self, event: TurnEnded) -> None:
         stopped, self._speech_stopped_at = self._speech_stopped_at, None
         if not self.metrics_enabled:
             return
@@ -131,7 +145,7 @@ class SpragTurnDetector(FrameProcessor):
             processor=self.name,
             model=self._model,
             is_complete=True,
-            probability=float(event.get("probability") or 0.0),
+            probability=event.probability or 0.0,
             e2e_processing_time_ms=(time.perf_counter() - stopped) * 1000
             if stopped is not None
             else 0.0,
@@ -143,18 +157,16 @@ class SpragTurnDetector(FrameProcessor):
             error_msg=f"Error connecting to Sprag turns: {error}", exception=error
         )
 
-    async def _on_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("type")
-        if event_type == "turn.started":
+    async def _on_event(self, event: TurnsServerEvent) -> None:
+        if isinstance(event, TurnStarted):
             await self.broadcast_frame(ProposedUserStartedSpeakingFrame)
-        elif event_type == "turn.update":
-            await self._call_event_handler("on_turn_update", event)
-        elif event_type == "turn.ended":
+        elif isinstance(event, TurnEnded):
             await self.broadcast_frame(ProposedUserStoppedSpeakingFrame)
             await self._push_turn_metrics(event)
-            await self._call_event_handler("on_turn_ended", event)
-        elif event_type == "error":
-            await self.push_error(error_msg=f"Sprag turns error: {error_message(event)}")
+        elif isinstance(event, TurnsError):
+            await self.push_error(error_msg=f"Sprag turns error: {event.description}")
+        if event.type in EVENT_HANDLERS:
+            await self._call_event_handler(EVENT_HANDLERS[event.type], event)
 
 
 def _mono(frame: InputAudioRawFrame) -> bytes:

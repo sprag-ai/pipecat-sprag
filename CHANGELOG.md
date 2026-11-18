@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0.dev4
+
+### Added
+
+- `SpragTurnDetector` and `SpragTurnAnalyzer` report every turn event to `on_turn_started`, `on_turn_update`, `on_eager_end`, `on_turn_resumed`, `on_turn_ended`, and `on_session_closed`, as typed models.
+- `SpragTurnParams(eager_eot_threshold=...)`.
+- `usage` on the detector and analyzer: the closed session's model invocations.
+
+### Changed
+
+- Audio that arrives before the session is configured, or while it reconnects, is buffered, up to 8 seconds, and sent once it is.
+- Closing a session waits up to 2 seconds for `session.closed`, delivering the events that arrive meanwhile.
+- `on_turn_update` and `on_turn_ended` receive `TurnUpdate` and `TurnEnded` rather than dicts.
+- `SpragTurnAnalyzer.append_audio` raises `RuntimeError` when the analyzer has no sample rate.
+
 ## 0.2.0.dev1
 
 ### Added
