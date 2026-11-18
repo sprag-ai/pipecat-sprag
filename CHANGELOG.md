@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0.dev4
+
+### Added
+
+- `SpragTurnDetector` and `SpragTurnAnalyzer` report every turn event to `on_turn_started`, `on_turn_update`, `on_eager_end`, `on_turn_resumed`, `on_turn_ended`, and `on_session_closed`, as typed models.
+- `SpragTurnParams(eager_eot_threshold=...)`.
+- `usage` on the detector and analyzer: the model invocations in the latest connection's `session.closed`, or `None` while that connection is open or when it closed without one.
+- `SessionConfigRefusedError`, the error a server refusal of the session's params reports.
+
+### Changed
+
+- `SpragTurnParams` applies the server's bounds: `min_silence_ms` at most 10000 and below `eot_timeout_ms`, and `eager_eot_threshold` at most `eot_threshold`. Other values raise a `ValidationError` at construction.
+- A server refusal of the params is no longer retried: the detector pushes one `ErrorFrame` with the `invalid_request` category, which marks it unusable, and the analyzer logs one error. Network failures are still retried.
+- Audio that arrives before the session is configured, or while it reconnects, is buffered, up to 8 seconds, and sent once it is. A single chunk longer than 8 seconds keeps its latest 8 seconds, and a chunk whose send fails as the connection drops is sent on the next connection.
+- Agent text set while the session connects reaches the server before live audio.
+- Closing a session waits up to 2 seconds for `session.closed`, delivering the events that arrive meanwhile.
+- `on_turn_update` and `on_turn_ended` receive `TurnUpdate` and `TurnEnded` rather than dicts.
+- `SpragTurnAnalyzer.append_audio` raises `RuntimeError` on its first call without a sample rate, and later calls without one return `INCOMPLETE`.
+- `SpragTurnAnalyzer.append_audio` reports a turn's end even when the model's next `turn.started` arrives before it.
+
 ## 0.2.0.dev1
 
 ### Added

@@ -9,7 +9,6 @@ Then open http://localhost:7860.
 """
 
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 from fastapi.responses import RedirectResponse
@@ -36,7 +35,7 @@ from pipecat.workers.runner import WorkerRunner
 from pipecat_sprag.llm import SpragLLMService
 from pipecat_sprag.stt import SpragSTTService
 from pipecat_sprag.tts import SpragTTSService
-from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnDetector
+from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnDetector, TurnEnded, TurnUpdate
 
 load_dotenv(override=True)
 
@@ -100,11 +99,11 @@ async def bot(runner_args: RunnerArguments) -> None:
     await runner.add_workers(worker)
 
     @turns.event_handler("on_turn_update")
-    async def on_turn_update(detector: SpragTurnDetector, event: dict[str, Any]) -> None:
-        logger.debug(f"probability {event['probability']:.2f} at {event['silence']:.2f} s silence")
+    async def on_turn_update(detector: SpragTurnDetector, event: TurnUpdate) -> None:
+        logger.debug(f"probability {event.probability:.2f} at {event.silence:.2f} s silence")
 
     @turns.event_handler("on_turn_ended")
-    async def on_turn_ended(detector: SpragTurnDetector, event: dict[str, Any]) -> None:
+    async def on_turn_ended(detector: SpragTurnDetector, event: TurnEnded) -> None:
         logger.info(f"Turn ended: {event}")
 
     @worker.rtvi.event_handler("on_client_ready")

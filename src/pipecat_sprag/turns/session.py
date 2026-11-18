@@ -4,27 +4,38 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnParams
 from pipecat.audio.utils import create_stream_resampler
-from pydantic import Field
+from pydantic import Field, model_validator
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from pipecat_sprag.common import ATTRIBUTION_HEADERS
+from pipecat_sprag.turns.events import (
+    SessionClosed,
+    TurnsError,
+    TurnsServerEvent,
+    TurnsUsage,
+    parse_event,
+)
 
 SAMPLE_RATE = 16000
+# A reading scores at most this much audio, so older audio cannot change one.
+SCORING_WINDOW_SECS = 8
+MAX_BUFFERED_AUDIO_BYTES = SCORING_WINDOW_SECS * SAMPLE_RATE * 2
 RECONNECT_INTERVAL_SECS = 2.0
 MAX_RECONNECT_INTERVAL_SECS = 30.0
 AUDIO_QUEUE_FRAMES = 25
 MAX_MESSAGE_BYTES = 2**16
 CLOSE_TIMEOUT_SECS = 2.0
+SESSION_CLOSE_TIMEOUT_SECS = 2.0
 
-EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+EventHandler = Callable[[TurnsServerEvent], Awaitable[None]]
 ErrorHandler = Callable[[Exception], Awaitable[None]]
 
 
@@ -34,8 +45,18 @@ class SpragTurnParams(BaseTurnParams):
     eot_threshold: float = Field(
         default=0.6, ge=0.0, le=1.0, description="end-of-turn probability that ends the turn"
     )
+    eager_eot_threshold: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="end-of-turn probability that sends turn.eager_end, at most eot_threshold; "
+        "None sends none",
+    )
     min_silence_ms: int = Field(
-        default=200, ge=0, description="silence the turn needs before the model can end it"
+        default=200,
+        ge=0,
+        le=10000,
+        description="silence the turn needs before the model can end it; below eot_timeout_ms",
     )
     eot_timeout_ms: int = Field(
         default=3000,
@@ -43,6 +64,24 @@ class SpragTurnParams(BaseTurnParams):
         le=60000,
         description="silence that ends the turn whatever the model scores",
     )
+
+    @model_validator(mode="after")
+    def reject_unordered_thresholds(self) -> SpragTurnParams:
+        """Reject thresholds the server refuses.
+
+        Raises:
+            ValueError: ``min_silence_ms`` is not below ``eot_timeout_ms``, or
+                ``eager_eot_threshold`` exceeds ``eot_threshold``.
+        """
+        if self.min_silence_ms >= self.eot_timeout_ms:
+            raise ValueError("min_silence_ms must be below eot_timeout_ms")
+        if self.eager_eot_threshold is not None and self.eager_eot_threshold > self.eot_threshold:
+            raise ValueError("eager_eot_threshold must not exceed eot_threshold")
+        return self
+
+
+class SessionConfigRefusedError(RuntimeError):
+    """The server refused the session's ``session.update``."""
 
 
 class TurnsSession:
@@ -80,23 +119,37 @@ class TurnsSession:
         self._on_event = on_event
         self._connect_timeout = connect_timeout
         self._websocket: ClientConnection | None = None
-        self._tasks: list[asyncio.Task[None]] = []
+        self._receiver: asyncio.Task[None] | None = None
+        self._sender: asyncio.Task[None] | None = None
         self._closing: asyncio.Task[None] | None = None
         self._audio: asyncio.Queue[tuple[bytes, int]] = asyncio.Queue(maxsize=AUDIO_QUEUE_FRAMES)
+        self._pending: deque[tuple[bytes, int]] = deque()
+        self._pending_bytes = 0
+        self._in_flight: tuple[bytes, int] | None = None
         self._lost = asyncio.Event()
         self._agent_text = ""
         self._resampler = create_stream_resampler()
+        self._usage: TurnsUsage | None = None
 
     @property
     def connected(self) -> bool:
         """Whether the session is open and configured."""
         return self._websocket is not None
 
+    @property
+    def usage(self) -> TurnsUsage | None:
+        """The usage in the latest connection's ``session.closed``.
+
+        None while that connection is open, and when it ended without ``session.closed``.
+        """
+        return self._usage
+
     async def maintain(self, on_error: ErrorHandler) -> None:
         """Keep the session connected until the calling task is cancelled.
 
         A failed attempt goes to ``on_error`` and is retried after a delay that starts at
-        ``RECONNECT_INTERVAL_SECS`` and doubles up to ``MAX_RECONNECT_INTERVAL_SECS``.
+        ``RECONNECT_INTERVAL_SECS`` and doubles up to ``MAX_RECONNECT_INTERVAL_SECS``. A
+        ``SessionConfigRefusedError`` goes to ``on_error`` and ends ``maintain`` without a retry.
 
         Args:
             on_error: Called with the error of each failed connection attempt.
@@ -105,6 +158,9 @@ class TurnsSession:
         while True:
             try:
                 await self.connect()
+            except SessionConfigRefusedError as e:
+                await on_error(e)
+                return
             except Exception as e:
                 await on_error(e)
                 await asyncio.sleep(delay)
@@ -114,10 +170,10 @@ class TurnsSession:
             await self._lost.wait()
 
     async def connect(self) -> None:
-        """Open the socket, apply the session's thresholds and send the agent text.
+        """Open the socket, apply the thresholds, then send the agent text and buffered audio.
 
         Raises:
-            RuntimeError: The server refused the configuration.
+            SessionConfigRefusedError: The server refused the configuration.
             ConnectionError: The socket closed before the session was configured.
             TimeoutError: The session took longer than ``connect_timeout`` to configure.
         """
@@ -130,34 +186,52 @@ class TurnsSession:
             close_timeout=CLOSE_TIMEOUT_SECS,
             max_size=MAX_MESSAGE_BYTES,
         )
+        self._usage = None
         try:
             await asyncio.wait_for(self._configure(websocket), timeout=self._connect_timeout)
+            sent_text = ""
             if self._agent_text:
-                await websocket.send(_context_update(self._agent_text))
+                sent_text = self._agent_text
+                await websocket.send(_context_update(sent_text))
+            self._resampler = create_stream_resampler()
+            while self._pending:
+                chunk = self._pop_pending()
+                try:
+                    await self._send(websocket, *chunk)
+                except BaseException:
+                    self._requeue(chunk)
+                    raise
+            # send_agent_text only reaches the socket once it is marked connected below.
+            while self._agent_text != sent_text:
+                sent_text = self._agent_text
+                await websocket.send(_context_update(sent_text))
         except BaseException:
             await websocket.close()
             raise
-        while not self._audio.empty():
-            self._audio.get_nowait()
-        self._resampler = create_stream_resampler()
         self._websocket = websocket
+        self._in_flight = None
         self._lost.clear()
-        self._tasks = [
-            asyncio.create_task(self._receive(websocket)),
-            asyncio.create_task(self._send_audio(websocket)),
-        ]
+        self._receiver = asyncio.create_task(self._receive(websocket))
+        self._sender = asyncio.create_task(self._send_audio(websocket))
 
     def push_audio(self, audio: bytes, sample_rate: int) -> None:
         """Queue caller audio for the socket without waiting on it.
 
-        Audio is dropped while the session is not connected, and the oldest queued audio is
-        dropped once ``AUDIO_QUEUE_FRAMES`` buffers are waiting.
+        While the session is not connected, audio is buffered and sent once it is, keeping
+        only the latest ``SCORING_WINDOW_SECS``. While it is connected, the oldest queued
+        audio is dropped once ``AUDIO_QUEUE_FRAMES`` buffers are waiting.
 
         Args:
             audio: Mono PCM16 little-endian samples.
             sample_rate: The audio's sample rate in hertz.
+
+        Raises:
+            ValueError: ``sample_rate`` is not positive.
         """
+        if sample_rate <= 0:
+            raise ValueError(f"the audio's sample rate must be positive, not {sample_rate}")
         if self._websocket is None:
+            self._buffer(audio, sample_rate)
             return
         if self._audio.full():
             self._audio.get_nowait()
@@ -188,21 +262,65 @@ class TurnsSession:
         except ConnectionClosed:
             self._drop(websocket)
 
-    async def close(self) -> None:
-        """End the session and close the socket; a later ``connect`` opens a new one."""
+    async def close(self, *, wait: bool = True) -> None:
+        """End the session and close the socket; a later ``connect`` opens a new one.
+
+        Unsent audio is discarded. Events that arrive while waiting reach ``on_event``.
+
+        Args:
+            wait: Whether to wait up to ``SESSION_CLOSE_TIMEOUT_SECS`` for the server's
+                ``session.closed`` before closing the socket.
+        """
         websocket, self._websocket = self._websocket, None
-        tasks, self._tasks = self._tasks, []
+        receiver, self._receiver = self._receiver, None
+        sender, self._sender = self._sender, None
+        self._clear_audio()
         current = asyncio.current_task()
-        others = [task for task in tasks if task is not current]
-        for task in others:
-            task.cancel()
-        await asyncio.gather(*others, return_exceptions=True)
-        if websocket is not None:
-            try:
-                await websocket.send(json.dumps({"type": "session.close"}))
-            except ConnectionClosed:
-                pass
+        if sender is not None and sender is not current:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+        if websocket is None:
+            return
+        try:
+            await websocket.send(json.dumps({"type": "session.close"}))
+            if wait and receiver is not None and receiver is not current:
+                await asyncio.wait({receiver}, timeout=SESSION_CLOSE_TIMEOUT_SECS)
+        except ConnectionClosed:
+            pass
+        finally:
+            if receiver is not None and receiver is not current and not receiver.done():
+                receiver.cancel()
+                await asyncio.gather(receiver, return_exceptions=True)
             await websocket.close()
+
+    def _buffer(self, audio: bytes, sample_rate: int) -> None:
+        window = SCORING_WINDOW_SECS * sample_rate * 2
+        if len(audio) > window:
+            audio = audio[len(audio) - window :]
+        self._pending.append((audio, sample_rate))
+        self._pending_bytes += _bytes_at_16k(audio, sample_rate)
+        self._trim_pending()
+
+    def _requeue(self, chunk: tuple[bytes, int]) -> None:
+        self._pending.appendleft(chunk)
+        self._pending_bytes += _bytes_at_16k(*chunk)
+        self._trim_pending()
+
+    def _trim_pending(self) -> None:
+        while self._pending_bytes > MAX_BUFFERED_AUDIO_BYTES:
+            self._pop_pending()
+
+    def _pop_pending(self) -> tuple[bytes, int]:
+        audio, sample_rate = self._pending.popleft()
+        self._pending_bytes -= _bytes_at_16k(audio, sample_rate)
+        return audio, sample_rate
+
+    def _clear_audio(self) -> None:
+        self._pending.clear()
+        self._pending_bytes = 0
+        self._in_flight = None
+        while not self._audio.empty():
+            self._audio.get_nowait()
 
     def _session_url(self) -> str:
         parts = urlsplit(self._url)
@@ -214,9 +332,8 @@ class TurnsSession:
         return urlunsplit(parts._replace(query=query))
 
     async def _configure(self, websocket: ClientConnection) -> None:
-        await websocket.send(
-            json.dumps({"type": "session.update", "session": self._params.model_dump()})
-        )
+        session = self._params.model_dump(exclude_none=True)
+        await websocket.send(json.dumps({"type": "session.update", "session": session}))
         async for message in websocket:
             if not isinstance(message, str):
                 continue
@@ -224,7 +341,7 @@ class TurnsSession:
             if event.get("type") == "session.updated":
                 return
             if event.get("type") == "error":
-                raise RuntimeError(error_message(event))
+                raise SessionConfigRefusedError(TurnsError.model_validate(event).description)
         raise ConnectionError("the turns session closed before it was configured")
 
     async def _receive(self, websocket: ClientConnection) -> None:
@@ -233,9 +350,15 @@ class TurnsSession:
                 if not isinstance(message, str):
                     continue
                 try:
-                    event = json.loads(message)
-                    if isinstance(event, dict):
-                        await self._on_event(event)
+                    raw = json.loads(message)
+                    event = parse_event(raw) if isinstance(raw, dict) else None
+                    if event is None:
+                        continue
+                    if isinstance(event, SessionClosed):
+                        self._usage = event.usage
+                    await self._on_event(event)
+                    if isinstance(event, SessionClosed):
+                        return
                 except Exception:
                     logger.exception("Error handling a Sprag turns event")
         except ConnectionClosed:
@@ -246,43 +369,47 @@ class TurnsSession:
     async def _send_audio(self, websocket: ClientConnection) -> None:
         try:
             while True:
-                audio, sample_rate = await self._audio.get()
-                if sample_rate != SAMPLE_RATE:
-                    audio = await self._resampler.resample(audio, sample_rate, SAMPLE_RATE)
-                if audio:
-                    await websocket.send(audio)
+                self._in_flight = await self._audio.get()
+                await self._send(websocket, *self._in_flight)
+                self._in_flight = None
         except ConnectionClosed:
             pass
         except Exception:
+            # Carried over, a chunk that fails for itself would fail every connection.
+            self._in_flight = None
             logger.exception("Error streaming audio to Sprag turns")
         finally:
             self._drop(websocket)
+
+    async def _send(self, websocket: ClientConnection, audio: bytes, sample_rate: int) -> None:
+        if sample_rate != SAMPLE_RATE:
+            audio = await self._resampler.resample(audio, sample_rate, SAMPLE_RATE)
+        if audio:
+            await websocket.send(audio)
 
     def _drop(self, websocket: ClientConnection) -> None:
         if self._websocket is not websocket:
             return
         logger.warning("Sprag turns session lost")
         self._websocket = None
+        # The next connection's stream clock restarts at its first byte, so only audio this
+        # connection never finished sending is carried over to it.
+        if self._in_flight is not None:
+            self._buffer(*self._in_flight)
+            self._in_flight = None
+        while not self._audio.empty():
+            self._buffer(*self._audio.get_nowait())
         current = asyncio.current_task()
-        for task in self._tasks:
-            if task is not current:
+        for task in (self._receiver, self._sender):
+            if task is not None and task is not current:
                 task.cancel()
-        self._tasks = []
+        self._receiver = self._sender = None
         self._closing = asyncio.create_task(websocket.close())
         self._lost.set()
 
 
-def error_message(event: dict[str, Any]) -> str:
-    """Describe a server ``error`` event.
-
-    Args:
-        event: The server's ``error`` event.
-
-    Returns:
-        The error's message, else its code, else a generic description.
-    """
-    error = event.get("error") or {}
-    return str(error.get("message") or error.get("code") or "the turns session reported an error")
+def _bytes_at_16k(audio: bytes, sample_rate: int) -> int:
+    return len(audio) * SAMPLE_RATE // sample_rate
 
 
 def _context_update(text: str) -> str:
