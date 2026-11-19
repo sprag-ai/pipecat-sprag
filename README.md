@@ -101,7 +101,7 @@ worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(analyzer)])
 - `min_silence_ms`: the silence a turn needs before the model can end it, from 0 to 10000 and below `eot_timeout_ms`. Default `200`.
 - `eot_timeout_ms`: the silence that ends the turn whatever the model scores, from 100 to 60000. Default `3000`.
 
-`eot_threshold` and `eager_eot_threshold` run from 0 to 1, and `eager_eot_threshold` can't exceed `eot_threshold`. `SpragTurnParams` raises a pydantic `ValidationError` for values outside these bounds, the same bounds the server applies. If the server refuses the params anyway, neither class reconnects: the detector pushes an `ErrorFrame` whose exception is a `SessionConfigRefusedError` and marks itself unusable, and the analyzer logs the error.
+`eot_threshold` and `eager_eot_threshold` run from 0 to 1, and `eager_eot_threshold` can't exceed `eot_threshold`. `SpragTurnParams` raises a pydantic `ValidationError` for values outside these bounds, the same bounds the server applies. If the server refuses the params anyway, neither class reconnects: the detector pushes an `ErrorFrame` whose exception is a `SessionConfigRefusedError` and marks itself unusable, and the analyzer logs the error. The same holds when the server rejects the connection itself for a reason a retry cannot clear, such as an invalid API key or an unknown model: the exception is a `SessionRejectedError`, which carries the response's `status_code`.
 
 The analyzer needs a sample rate before it receives audio. A pipeline sets it when it starts; outside one, pass `sample_rate=` or call `set_sample_rate()`. Without one, the first `append_audio` raises `RuntimeError`, and later calls drop the audio and return `INCOMPLETE`.
 
