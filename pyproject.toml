@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pipecat-sprag"
-version = "0.2.0.dev4"
+version = "0.2.0"
 description = "Sprag speech and language models for Pipecat: Rhythm STT, Symphony LLM, Chorus TTS, and turn detection"
 readme = "README.md"
 license = "BSD-2-Clause"
