@@ -10,7 +10,7 @@
 - `SpragTurnParams`: the session's settings, `eot_threshold`, `eager_eot_threshold`, `min_silence_ms`, and `eot_timeout_ms`, held to the server's bounds. Other values raise a `ValidationError` at construction.
 - Event handlers on the detector and analyzer, each receiving a typed model: `on_turn_started`, `on_turn_update`, `on_eager_end`, `on_turn_resumed`, `on_turn_ended`, and `on_session_closed`.
 - `usage` on the detector and analyzer: the model invocations in the latest connection's `session.closed`, or `None` while that connection is open or when it closed without one.
-- `SessionConfigRefusedError`, the error a server refusal of the session's params reports. A refusal is not retried; network failures are.
+- `SessionConfigRefusedError`, the error a server refusal of the session's params reports, and `SessionRejectedError`, the error a rejected connection reports when a retry cannot clear it, such as an invalid API key or an unknown model. Neither is retried; network failures are.
 - `SpragSTTService(commit_on_turn_end=True)`: transcribes each turn when `SpragTurnDetector` ends it, so turn detection needs no VAD.
 - `examples/turn_detection.py`: a voice agent whose turns are decided by Sprag's turn model.
 - `examples/demo.py`: the voice agent behind a Sprag-branded browser client, with turns decided by Sprag's turn model.

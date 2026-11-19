@@ -32,7 +32,12 @@ from pipecat_sprag.turns.events import (
     TurnStarted,
     TurnsUsage,
 )
-from pipecat_sprag.turns.session import SessionConfigRefusedError, SpragTurnParams, TurnsSession
+from pipecat_sprag.turns.session import (
+    SessionConfigRefusedError,
+    SessionRejectedError,
+    SpragTurnParams,
+    TurnsSession,
+)
 
 
 class SpragTurnDetector(FrameProcessor):
@@ -162,6 +167,13 @@ class SpragTurnDetector(FrameProcessor):
                 error_msg=f"Sprag turns refused the detector's params; not reconnecting: {error}",
                 exception=error,
                 category=ErrorCategory.INVALID_REQUEST,
+            )
+            return
+        if isinstance(error, SessionRejectedError):
+            await self.push_error(
+                error_msg=f"Sprag turns rejected the connection; not reconnecting: {error}",
+                exception=error,
+                category=error.category,
             )
             return
         await self.push_error(

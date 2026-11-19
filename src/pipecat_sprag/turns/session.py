@@ -11,9 +11,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from loguru import logger
 from pipecat.audio.turn.base_turn_analyzer import BaseTurnParams
 from pipecat.audio.utils import create_stream_resampler
+from pipecat.utils.errors import ErrorCategory, classify_http_status_code
 from pydantic import Field, model_validator
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from pipecat_sprag.common import ATTRIBUTION_HEADERS
 from pipecat_sprag.turns.events import (
@@ -84,6 +85,28 @@ class SessionConfigRefusedError(RuntimeError):
     """The server refused the session's ``session.update``."""
 
 
+class SessionRejectedError(RuntimeError):
+    """The server rejected the session's handshake for a reason a retry cannot clear.
+
+    An invalid API key and an unknown model are rejected this way.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        """Record the rejection.
+
+        Args:
+            status_code: The handshake's HTTP status.
+            message: The server's reason.
+        """
+        super().__init__(message)
+        self.status_code = status_code
+
+    @property
+    def category(self) -> ErrorCategory:
+        """The Pipecat error category of the rejection's status."""
+        return classify_http_status_code(self.status_code)
+
+
 class TurnsSession:
     """One ``/v1/turns`` session: streams caller audio and agent context, and reports turn events.
 
@@ -149,7 +172,8 @@ class TurnsSession:
 
         A failed attempt goes to ``on_error`` and is retried after a delay that starts at
         ``RECONNECT_INTERVAL_SECS`` and doubles up to ``MAX_RECONNECT_INTERVAL_SECS``. A
-        ``SessionConfigRefusedError`` goes to ``on_error`` and ends ``maintain`` without a retry.
+        ``SessionConfigRefusedError`` or a ``SessionRejectedError`` goes to ``on_error`` and
+        ends ``maintain`` without a retry.
 
         Args:
             on_error: Called with the error of each failed connection attempt.
@@ -158,7 +182,7 @@ class TurnsSession:
         while True:
             try:
                 await self.connect()
-            except SessionConfigRefusedError as e:
+            except (SessionConfigRefusedError, SessionRejectedError) as e:
                 await on_error(e)
                 return
             except Exception as e:
@@ -173,19 +197,30 @@ class TurnsSession:
         """Open the socket, apply the thresholds, then send the agent text and buffered audio.
 
         Raises:
+            SessionRejectedError: The server rejected the handshake with a status that a
+                retry cannot clear, such as an invalid API key or an unknown model.
             SessionConfigRefusedError: The server refused the configuration.
             ConnectionError: The socket closed before the session was configured.
             TimeoutError: The session took longer than ``connect_timeout`` to configure.
         """
         if self._websocket is not None:
             return
-        websocket = await connect(
-            self._session_url(),
-            additional_headers={"Authorization": f"Bearer {self._api_key}", **ATTRIBUTION_HEADERS},
-            open_timeout=self._connect_timeout,
-            close_timeout=CLOSE_TIMEOUT_SECS,
-            max_size=MAX_MESSAGE_BYTES,
-        )
+        try:
+            websocket = await connect(
+                self._session_url(),
+                additional_headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    **ATTRIBUTION_HEADERS,
+                },
+                open_timeout=self._connect_timeout,
+                close_timeout=CLOSE_TIMEOUT_SECS,
+                max_size=MAX_MESSAGE_BYTES,
+            )
+        except InvalidStatus as e:
+            status = e.response.status_code
+            if classify_http_status_code(status).is_permanent:
+                raise SessionRejectedError(status, _rejection_reason(e)) from e
+            raise
         self._usage = None
         try:
             await asyncio.wait_for(self._configure(websocket), timeout=self._connect_timeout)
@@ -410,6 +445,15 @@ class TurnsSession:
 
 def _bytes_at_16k(audio: bytes, sample_rate: int) -> int:
     return len(audio) * SAMPLE_RATE // sample_rate
+
+
+def _rejection_reason(rejection: InvalidStatus) -> str:
+    response = rejection.response
+    try:
+        message = json.loads(response.body or b"")["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        message = None
+    return message if isinstance(message, str) and message else f"HTTP {response.status_code}"
 
 
 def _context_update(text: str) -> str:

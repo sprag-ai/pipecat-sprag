@@ -39,6 +39,7 @@ from websockets.exceptions import ConnectionClosed
 
 from pipecat_sprag.turns import (
     SessionConfigRefusedError,
+    SessionRejectedError,
     SpragAgentTextObserver,
     SpragTurnAnalyzer,
     SpragTurnDetector,
@@ -78,6 +79,7 @@ class _TurnsServer:
         answer_close: bool = True,
         on_close: list[dict[str, Any]] | None = None,
         invocations: int = 1,
+        reject: tuple[int, str] | None = None,
     ) -> None:
         self.replay_after = replay_after
         self.refuse = refuse
@@ -91,6 +93,7 @@ class _TurnsServer:
         self.answer_close = answer_close
         self.on_close = on_close or []
         self.invocations = invocations
+        self.reject = reject
         self.handshakes: list[web.Request] = []
         self.events: list[dict[str, Any]] = []
         # audio bytes the connection had received when each of ``events`` arrived
@@ -98,8 +101,11 @@ class _TurnsServer:
         self.audio_bytes = 0
         self.received: list[bytearray] = []
 
-    async def handle(self, request: web.Request) -> web.WebSocketResponse:
+    async def handle(self, request: web.Request) -> web.StreamResponse:
         self.handshakes.append(request)
+        if self.reject is not None:
+            status, message = self.reject
+            return web.json_response({"error": {"message": message}}, status=status)
         audio = bytearray()
         self.received.append(audio)
         ws = web.WebSocketResponse()
@@ -414,6 +420,61 @@ async def test_a_refused_configuration_is_reported_once_and_not_retried(turns, f
     assert len(server.handshakes) == 1
     assert not detector.is_usable
     assert _count(down, InputAudioRawFrame) == 4
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "category"),
+    [
+        (401, "Invalid API key", ErrorCategory.AUTHENTICATION),
+        (404, "The model `nope` does not exist.", ErrorCategory.INVALID_REQUEST),
+    ],
+)
+async def test_a_rejected_connection_is_reported_once_and_not_retried(
+    turns, fast_retry, status: int, message: str, category: ErrorCategory
+) -> None:
+    server, url = await turns(reject=(status, message))
+    detector = SpragTurnDetector(api_key="sk-test", url=url)
+    down, up = await run_until(
+        detector,
+        [*_audio(1), _after(0.5, lambda down, up: _count(up, ErrorFrame) > 0), *_audio(3)],
+        lambda down, up: _count(down, InputAudioRawFrame) == 4,
+    )
+    errors = [f for f in up if isinstance(f, ErrorFrame)]
+    assert len(errors) == 1
+    assert message in errors[0].error and "not reconnecting" in errors[0].error
+    assert isinstance(errors[0].exception, SessionRejectedError)
+    assert errors[0].exception.status_code == status
+    assert errors[0].category is category
+    assert len(server.handshakes) == 1
+    assert not detector.is_usable
+
+
+async def test_a_rejection_that_may_pass_is_retried(turns, fast_retry) -> None:
+    server, url = await turns(reject=(503, "Temporarily unavailable"))
+    detector = SpragTurnDetector(api_key="sk-test", url=url)
+    await run_until(detector, _audio(1), lambda down, up: _count(up, ErrorFrame) >= 3, timeout=5)
+    assert len(server.handshakes) >= 3
+    assert detector.is_usable
+
+
+async def test_the_analyzer_stops_connecting_after_a_rejected_connection(turns, fast_retry) -> None:
+    server, url = await turns(reject=(401, "Invalid API key"))
+    analyzer = SpragTurnAnalyzer(api_key="sk-test", url=url)
+    analyzer.set_sample_rate(16000)
+    logged: list[str] = []
+    sink = logger.add(lambda message: logged.append(str(message)), level="ERROR")
+    try:
+        analyzer.append_audio(FRAME_16K, is_speech=True)
+        connection = analyzer._connection
+        assert connection is not None
+        await asyncio.wait_for(connection, timeout=5)
+        await asyncio.sleep(0.3)
+        assert len(server.handshakes) == 1
+        rejections = [m for m in logged if "Invalid API key" in m]
+        assert len(rejections) == 1 and "not reconnecting" in rejections[0]
+    finally:
+        logger.remove(sink)
+        await analyzer.cleanup()
 
 
 async def test_the_analyzer_stops_connecting_after_a_refused_configuration(

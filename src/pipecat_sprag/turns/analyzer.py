@@ -19,7 +19,12 @@ from pipecat_sprag.turns.events import (
     TurnStarted,
     TurnsUsage,
 )
-from pipecat_sprag.turns.session import SessionConfigRefusedError, SpragTurnParams, TurnsSession
+from pipecat_sprag.turns.session import (
+    SessionConfigRefusedError,
+    SessionRejectedError,
+    SpragTurnParams,
+    TurnsSession,
+)
 
 
 class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
@@ -176,6 +181,9 @@ class SpragTurnAnalyzer(BaseTurnAnalyzer, BaseObject):
     async def _report_error(self, error: Exception) -> None:
         if isinstance(error, SessionConfigRefusedError):
             logger.error(f"Sprag turns refused the analyzer's params; not reconnecting: {error}")
+            return
+        if isinstance(error, SessionRejectedError):
+            logger.error(f"Sprag turns rejected the connection; not reconnecting: {error}")
             return
         logger.error(f"Error connecting to Sprag turns: {error}")
 
