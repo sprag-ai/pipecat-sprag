@@ -24,8 +24,18 @@ SILENCE = b"\x00\x00" * 480  # 20 ms at 24 kHz
 
 
 class _TranscriptionServer:
+    """Answers each commit with ``committed`` and a transcript.
+
+    ``answer_after`` holds the transcripts back until that many commits have arrived, then
+    sends them in the ``answer_order`` given, as indexes into the commits. ``fail`` holds
+    the indexes of the commits answered with a failure in place of a transcript.
+    """
+
     def __init__(self, transcript: str = "hello there") -> None:
         self.transcript = transcript
+        self.answer_after = 1
+        self.answer_order: list[int] | None = None
+        self.fail: set[int] = set()
         self.handshakes: list[web.Request] = []
         self.received: list[dict[str, Any]] = []
 
@@ -34,6 +44,7 @@ class _TranscriptionServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         await ws.send_json({"type": "session.created", "session": {"type": "transcription"}})
+        commits = 0
         async for msg in ws:
             if msg.type is not WSMsgType.TEXT:
                 continue
@@ -42,14 +53,28 @@ class _TranscriptionServer:
             if event["type"] == "session.update":
                 await ws.send_json({"type": "session.updated", "session": event["session"]})
             elif event["type"] == "input_audio_buffer.commit":
-                item = {"item_id": "item_1", "content_index": 0}
-                await ws.send_json({"type": "input_audio_buffer.committed", **item})
-                for word in self.transcript.split(" "):
-                    delta = {"type": "conversation.item.input_audio_transcription.delta"}
-                    await ws.send_json({**delta, **item, "delta": word + " "})
-                done = {"type": "conversation.item.input_audio_transcription.completed"}
-                await ws.send_json({**done, **item, "transcript": self.transcript})
+                await ws.send_json(
+                    {"type": "input_audio_buffer.committed", "item_id": f"item_{commits}"}
+                )
+                commits += 1
+                if commits == self.answer_after:
+                    for index in self.answer_order or range(commits):
+                        await self._answer(ws, index)
+                elif commits > self.answer_after:
+                    await self._answer(ws, commits - 1)
         return ws
+
+    async def _answer(self, ws: web.WebSocketResponse, index: int) -> None:
+        item = {"item_id": f"item_{index}", "content_index": 0}
+        if index in self.fail:
+            failed = {"type": "conversation.item.input_audio_transcription.failed"}
+            await ws.send_json({**failed, **item, "error": {"message": "no transcript"}})
+            return
+        for word in self.transcript.split(" "):
+            delta = {"type": "conversation.item.input_audio_transcription.delta"}
+            await ws.send_json({**delta, **item, "delta": word + " "})
+        done = {"type": "conversation.item.input_audio_transcription.completed"}
+        await ws.send_json({**done, **item, "transcript": self.transcript})
 
     def events(self, event_type: str) -> list[dict[str, Any]]:
         return [e for e in self.received if e["type"] == event_type]
@@ -157,8 +182,45 @@ async def test_the_transcript_of_a_committed_turn_is_finalized(
     down, _ = await run_until(
         stt, frames, _transcribed, params=PipelineParams(audio_in_sample_rate=24000), between=0.01
     )
-    finals = [f for f in down if isinstance(f, TranscriptionFrame)]
-    assert [f.finalized for f in finals] == [True]
+    assert _finalized(down) == [True]
+
+
+def _finalized(frames: list[Frame]) -> list[bool | None]:
+    return [f.finalized for f in frames if isinstance(f, TranscriptionFrame)]
+
+
+@pytest.mark.parametrize("answer_order", [[0, 1], [1, 0]])
+async def test_a_transcript_is_not_finalized_while_a_later_commit_is_unanswered(
+    transcription: tuple[_TranscriptionServer, str], answer_order: list[int]
+) -> None:
+    server, url = transcription
+    server.answer_after = 2
+    server.answer_order = answer_order
+    stt = SpragSTTService(api_key="test-key", base_url=url)
+    down, _ = await run_until(
+        stt,
+        [*_utterance(), *_utterance()],
+        lambda down, up: len(_finalized(down)) == 2,
+        params=PipelineParams(audio_in_sample_rate=24000),
+        between=0.01,
+    )
+    assert _finalized(down) == [False, True]
+
+
+async def test_a_failed_transcription_does_not_hold_back_the_next_finalized_transcript(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    server.fail = {0}
+    stt = SpragSTTService(api_key="test-key", base_url=url)
+    down, _ = await run_until(
+        stt,
+        [*_utterance(), *_utterance()],
+        _transcribed,
+        params=PipelineParams(audio_in_sample_rate=24000),
+        between=0.01,
+    )
+    assert _finalized(down) == [True]
 
 
 @pytest.mark.parametrize("commit_on_turn_end", [True, False])

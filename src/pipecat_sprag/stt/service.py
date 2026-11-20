@@ -68,6 +68,7 @@ class SpragSTTService(OpenAIRealtimeSTTService):
             **kwargs,
         )
         self._commit_on_turn_end = commit_on_turn_end
+        self._unanswered_commits = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         """Process a frame, committing the audio when a proposed turn end arrives.
@@ -84,11 +85,28 @@ class SpragSTTService(OpenAIRealtimeSTTService):
         ):
             await self._commit_audio_buffer()
 
+    async def _connect_websocket(self) -> None:
+        self._unanswered_commits = 0
+        await super()._connect_websocket()
+
     async def _commit_audio_buffer(self) -> None:
-        self.request_finalize()
+        self._unanswered_commits += 1
         await super()._commit_audio_buffer()
 
     async def _handle_transcription_completed(self, evt: dict[str, Any]) -> None:
-        # Rhythm transcribes each commit in one pass, so its completed transcript is final.
-        self.confirm_finalize()
+        # A transcript is final for the speech so far only once no commit is still unanswered.
+        if self._answer_commit() and evt.get("transcript"):
+            self.request_finalize()
+            self.confirm_finalize()
         await super()._handle_transcription_completed(evt)
+
+    async def _handle_transcription_failed(self, evt: dict[str, Any]) -> None:
+        self._answer_commit()
+        await super()._handle_transcription_failed(evt)
+
+    def _answer_commit(self) -> bool:
+        """Count one commit as answered, and report whether it was the last one unanswered."""
+        if self._unanswered_commits == 0:
+            return False
+        self._unanswered_commits -= 1
+        return self._unanswered_commits == 0
