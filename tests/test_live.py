@@ -3,6 +3,7 @@
 ``SPRAG_TEST_BASE_URL`` points them at another environment (default: production).
 """
 
+import asyncio
 import io
 import os
 import wave
@@ -59,6 +60,9 @@ pytestmark = [
 
 BASE_URL = os.environ.get("SPRAG_TEST_BASE_URL", SPRAG_BASE_URL)
 PHRASE = "The tide came in slowly over the flat grey sand."
+SECOND_PHRASE = "A lighthouse stood at the far end of the bay."
+# The longest turn the server buffers before it commits the audio on its own.
+SERVER_TURN_SECS = 120
 
 
 async def test_llm_calls_a_tool_and_reports_usage() -> None:
@@ -158,8 +162,147 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
     assert "tide came in slowly" in _transcript(down)
-    finalized = [f.finalized for f in down if isinstance(f, TranscriptionFrame)]
-    assert finalized[-1] is (turn_detection is False)
+    assert _finalized(down)[-1] is (turn_detection is False)
+
+
+def _finalized(down: list[Frame]) -> list[bool | None]:
+    return [f.finalized for f in down if isinstance(f, TranscriptionFrame)]
+
+
+def _stt(**kwargs: Any) -> SpragSTTService:
+    url = BASE_URL.replace("https://", "wss://") + "/audio/transcriptions"
+    return SpragSTTService(base_url=url, **kwargs)
+
+
+def _errors(up: list[Frame]) -> list[Frame]:
+    return [f for f in up if isinstance(f, ErrorFrame)]
+
+
+def _transcripts(count: int) -> Any:
+    return lambda down, up: len(_finalized(down)) >= count or bool(_errors(up))
+
+
+async def _transcribe(stt: SpragSTTService, frames: list[Any], count: int) -> list[Frame]:
+    down, up = await run_until(
+        stt,
+        frames,
+        _transcripts(count),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        timeout=90,
+        between=0.02,
+    )
+    assert not _errors(up)
+    return down
+
+
+async def test_stt_finalizes_only_the_transcript_after_a_caller_who_resumed() -> None:
+    first = _audio_frames(_speech_pcm(PHRASE))
+    second = _audio_frames(_speech_pcm(SECOND_PHRASE), trailing_silence_s=1.0)
+    down = await _transcribe(
+        _stt(),
+        [
+            VADUserStartedSpeakingFrame(),
+            *first,
+            VADUserStoppedSpeakingFrame(),
+            VADUserStartedSpeakingFrame(),
+            *second,
+            VADUserStoppedSpeakingFrame(),
+        ],
+        2,
+    )
+    assert _finalized(down) == [False, True]
+    assert "tide came in slowly" in _transcript(down)
+    assert "lighthouse" in _transcript(down)
+
+
+async def test_stt_commits_a_turn_ended_by_a_vad_and_a_turn_model_once() -> None:
+    speech = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=0.3)
+    down = await _transcribe(
+        _stt(commit_on_turn_end=True),
+        [
+            VADUserStartedSpeakingFrame(),
+            *speech,
+            VADUserStoppedSpeakingFrame(),
+            *_audio_frames(b"", trailing_silence_s=0.04),
+            ProposedUserStoppedSpeakingFrame(),
+            *_audio_frames(b"", trailing_silence_s=2.0),
+        ],
+        1,
+    )
+    assert _finalized(down) == [True]
+
+
+async def test_stt_keeps_its_session_through_a_turn_too_short_to_commit() -> None:
+    speech = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=1.0)
+    stt = _stt()
+    down = await _transcribe(
+        stt,
+        [
+            VADUserStartedSpeakingFrame(),
+            *_audio_frames(b"", trailing_silence_s=0.04),
+            VADUserStoppedSpeakingFrame(),
+            *_audio_frames(b"", trailing_silence_s=1.0),
+            VADUserStartedSpeakingFrame(),
+            *speech,
+            VADUserStoppedSpeakingFrame(),
+        ],
+        1,
+    )
+    assert _finalized(down) == [True]
+    assert "tide came in slowly" in _transcript(down)
+
+
+async def test_stt_finalizes_again_after_it_reconnects() -> None:
+    speech = _audio_frames(_speech_pcm(PHRASE), trailing_silence_s=1.0)
+    turn = [VADUserStartedSpeakingFrame(), *speech, VADUserStoppedSpeakingFrame()]
+    stt = _stt()
+    sessions: list[bool] = []
+
+    @stt.event_handler("on_connected")
+    async def on_connected(service: SpragSTTService) -> None:
+        sessions.append(True)
+
+    def drop(down: list[Frame], up: list[Frame]) -> bool:
+        asyncio.get_running_loop().create_task(stt._websocket.close(code=1011))
+        return True
+
+    down, up = await run_until(
+        stt,
+        [
+            *turn,
+            _transcripts(1),
+            drop,
+            lambda down, up: len(sessions) == 2 and stt._session_ready,
+            *turn,
+        ],
+        _transcripts(2),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        timeout=90,
+        between=0.02,
+    )
+    assert len(sessions) == 2
+    assert _finalized(down) == [True, True]
+
+
+@pytest.mark.timeout(300)
+async def test_stt_finalizes_only_the_end_of_a_turn_longer_than_the_server_holds() -> None:
+    phrase = _speech_pcm(PHRASE) + b"\x00\x00" * 12000
+    spoken = phrase * (int(SERVER_TURN_SECS * 48000 / len(phrase)) + 2)
+    down, up = await run_until(
+        _stt(),
+        [
+            VADUserStartedSpeakingFrame(),
+            *_audio_frames(spoken),
+            VADUserStoppedSpeakingFrame(),
+            *_audio_frames(b"", trailing_silence_s=1.0),
+        ],
+        _transcripts(2),
+        params=PipelineParams(audio_in_sample_rate=24000),
+        timeout=280,
+        between=0.002,
+    )
+    assert not _errors(up)
+    assert _finalized(down) == [False, True]
 
 
 @pytest.mark.parametrize("rate", [24000, 16000])
