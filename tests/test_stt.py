@@ -216,7 +216,7 @@ async def test_a_failed_transcription_does_not_hold_back_the_next_finalized_tran
     down, _ = await run_until(
         stt,
         [*_utterance(), *_utterance()],
-        _transcribed,
+        lambda down, up: bool(_finalized(down)),
         params=PipelineParams(audio_in_sample_rate=24000),
         between=0.01,
     )
