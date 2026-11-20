@@ -12,6 +12,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    ProposedUserStartedSpeakingFrame,
     ProposedUserStoppedSpeakingFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
@@ -31,6 +32,7 @@ class _TranscriptionServer:
     sends the transcript of the commit at that index, and ``fail`` a failure in its place.
     ``commit`` commits an item no client asked for, as the server does on its own. With
     ``acknowledge`` off, a client's commit is left unacknowledged until ``commit`` is called.
+    ``error`` sends an error event, which makes the client reconnect.
     """
 
     def __init__(self, transcript: str = "hello there") -> None:
@@ -44,7 +46,8 @@ class _TranscriptionServer:
 
     async def handle(self, request: web.Request) -> web.WebSocketResponse:
         self.handshakes.append(request)
-        ws = web.WebSocketResponse()
+        # aiohttp fails to read a compressed second connection from the same client.
+        ws = web.WebSocketResponse(compress=False)
         await ws.prepare(request)
         await ws.send_json({"type": "session.created", "session": {"type": "transcription"}})
         sender = asyncio.create_task(self._send(ws))
@@ -90,6 +93,10 @@ class _TranscriptionServer:
         failed = {"type": "conversation.item.input_audio_transcription.failed"}
         item = {"item_id": f"item_{index}", "content_index": 0}
         self._outbox.put_nowait({**failed, **item, "error": {"message": "no transcript"}})
+        return True
+
+    def error(self) -> bool:
+        self._outbox.put_nowait({"type": "error", "error": {"message": "try again"}})
         return True
 
     def committed(self, count: int) -> bool:
@@ -300,6 +307,59 @@ async def test_a_transcript_is_not_finalized_while_a_commit_is_unacknowledged(
     ]
     stt = SpragSTTService(api_key="test-key", base_url=url)
     assert await _run(stt, frames, 2) == [False, True]
+
+
+async def test_a_transcript_is_not_finalized_when_the_caller_spoke_through_the_commit(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    frames = [VADUserStartedSpeakingFrame(), *AUDIO, ProposedUserStoppedSpeakingFrame(), *AUDIO]
+    stt = SpragSTTService(api_key="test-key", base_url=url, commit_on_turn_end=True)
+    assert await _run(stt, frames, 1) == [False]
+
+
+async def test_a_transcript_is_not_finalized_after_a_turn_model_reports_the_caller_resumed(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    server.hold = True
+    frames = [
+        *AUDIO,
+        ProposedUserStoppedSpeakingFrame(),
+        lambda down, up: server.committed(1),
+        ProposedUserStartedSpeakingFrame(),
+        lambda down, up: server.answer(0),
+    ]
+    stt = SpragSTTService(api_key="test-key", base_url=url, commit_on_turn_end=True)
+    assert await _run(stt, frames, 1) == [False]
+
+
+async def test_a_turn_ended_by_a_vad_and_a_turn_model_is_committed_once(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    frames = [*_utterance(), *AUDIO[:2], ProposedUserStoppedSpeakingFrame()]
+    stt = SpragSTTService(api_key="test-key", base_url=url, commit_on_turn_end=True)
+    assert await _run(stt, frames, 1) == [True]
+    assert len(server.events("input_audio_buffer.commit")) == 1
+
+
+async def test_a_reconnect_forgets_the_commits_the_lost_connection_left_unanswered(
+    transcription: tuple[_TranscriptionServer, str],
+) -> None:
+    server, url = transcription
+    server.hold = True
+    frames = [
+        *_utterance(),
+        lambda down, up: server.committed(1),
+        lambda down, up: server.error(),
+        lambda down, up: len(server.events("session.update")) == 2,
+        *_utterance(),
+        lambda down, up: server.committed(2),
+        lambda down, up: server.answer(1),
+    ]
+    stt = SpragSTTService(api_key="test-key", base_url=url)
+    assert await _run(stt, frames, 1) == [True]
 
 
 async def test_a_commit_made_while_disconnected_does_not_hold_back_later_transcripts(

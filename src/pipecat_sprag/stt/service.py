@@ -20,6 +20,9 @@ from pipecat.services.openai.stt import OpenAIRealtimeSTTService, OpenAIRealtime
 
 from pipecat_sprag.common import SPRAG_TRANSCRIPTION_URL, resolve_api_key
 
+# The server refuses a commit of less audio with an error, which drops the session.
+MIN_COMMIT_SECS = 0.1
+
 
 @dataclass
 class SpragSTTSettings(OpenAIRealtimeSTTSettings):
@@ -80,6 +83,7 @@ class SpragSTTService(OpenAIRealtimeSTTService):
         self._unacknowledged_commits = 0
         self._open_items: set[str] = set()
         self._spoken_since_commit = False
+        self._uncommitted_secs = 0.0
         self._finalizing = asyncio.Lock()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
@@ -117,7 +121,8 @@ class SpragSTTService(OpenAIRealtimeSTTService):
         # Held so that a frame reporting the caller speaking again cannot pass a transcript
         # already judged to cover all their speech.
         async with self._finalizing:
-            frame.finalized = self._covers_all_speech(frame)
+            if self._covers_all_speech(frame):
+                frame.finalized = True
             await super().push_frame(frame, direction)
 
     def _covers_all_speech(self, transcript: TranscriptionFrame) -> bool:
@@ -136,11 +141,19 @@ class SpragSTTService(OpenAIRealtimeSTTService):
         await super()._disconnect_websocket()
         self._unacknowledged_commits = 0
         self._open_items.clear()
+        self._uncommitted_secs = 0.0
+
+    async def _send_audio(self, audio: bytes) -> None:
+        await super()._send_audio(audio)
+        if self._websocket and not self._disconnecting:
+            self._uncommitted_secs += len(audio) / (self.sample_rate * 2)
 
     async def _commit_audio_buffer(self) -> None:
-        if self._websocket and not self._disconnecting:
-            self._unacknowledged_commits += 1
-            self._spoken_since_commit = False
+        if self._uncommitted_secs < MIN_COMMIT_SECS:
+            return
+        self._uncommitted_secs = 0.0
+        self._unacknowledged_commits += 1
+        self._spoken_since_commit = self._user_speaking
         await super()._commit_audio_buffer()
 
     def _open_item(self, item_id: str) -> None:
