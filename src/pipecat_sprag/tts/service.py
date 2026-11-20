@@ -26,8 +26,6 @@ from websockets.protocol import State
 
 from pipecat_sprag.common import ATTRIBUTION_HEADERS, SPRAG_SPEECH_URL, resolve_api_key
 
-SAMPLE_RATE = 24000
-
 
 @dataclass
 class SpragTTSSettings(TTSSettings):
@@ -54,6 +52,7 @@ class SpragTTSService(InterruptibleTTSService):
         api_key: str | None = None,
         url: str = SPRAG_SPEECH_URL,
         connect_timeout: float = 10.0,
+        sample_rate: int | None = None,
         settings: SpragTTSSettings | None = None,
         **kwargs: Any,
     ) -> None:
@@ -64,6 +63,8 @@ class SpragTTSService(InterruptibleTTSService):
                 variable.
             url: The Sprag streaming speech WebSocket URL.
             connect_timeout: Seconds the session may take to be configured.
+            sample_rate: The output sample rate in Hz: 8000, 16000, 22050, 24000, 44100 or
+                48000. Defaults to the pipeline's output sample rate.
             settings: Runtime-updatable settings. Defaults to the ``chorus`` model
                 and the ``wade`` voice.
             **kwargs: Additional arguments passed to InterruptibleTTSService.
@@ -75,7 +76,7 @@ class SpragTTSService(InterruptibleTTSService):
             push_start_frame=True,
             push_stop_frames=True,
             pause_frame_processing=True,
-            sample_rate=SAMPLE_RATE,
+            sample_rate=sample_rate,
             settings=default_settings,
             **kwargs,
         )
@@ -182,7 +183,11 @@ class SpragTTSService(InterruptibleTTSService):
         await self._call_event_handler("on_connected")
 
     async def _configure_session(self, websocket: ClientConnection) -> None:
-        session = {"type": "realtime", "audio": {"output": {"voice": self._settings.voice}}}
+        output = {
+            "voice": self._settings.voice,
+            "format": {"type": "audio/pcm", "rate": self.sample_rate},
+        }
+        session = {"type": "realtime", "audio": {"output": output}}
         await websocket.send(json.dumps({"type": "session.update", "session": session}))
         async for message in websocket:
             event = json.loads(message)
