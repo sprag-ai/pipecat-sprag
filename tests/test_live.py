@@ -158,6 +158,8 @@ async def test_stt_transcribes_speech(turn_detection: dict[str, str] | bool) -> 
     )
     assert not [f for f in up if isinstance(f, ErrorFrame)]
     assert "tide came in slowly" in _transcript(down)
+    finalized = [f.finalized for f in down if isinstance(f, TranscriptionFrame)]
+    assert finalized[-1] is (turn_detection is False)
 
 
 @pytest.mark.parametrize("rate", [24000, 16000])

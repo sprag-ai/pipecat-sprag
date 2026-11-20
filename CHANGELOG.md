@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- `SpragSTTService` marks a transcript as finalized when it covers everything the caller has said, so a turn analyzer such as `SpragTurnAnalyzer` or Smart Turn ends the turn when that transcript arrives instead of waiting for the STT timeout. Transcripts are not finalized with `turn_detection={"type": "server_vad"}`.
+- `SpragSTTService` no longer commits less than 100 ms of audio, which the server refuses with an error that drops the session. A turn ended by both a VAD and `SpragTurnDetector` under `commit_on_turn_end=True` was committed twice, the second time with almost no audio.
 - `SpragTurnDetector` and `SpragTurnAnalyzer` read caller audio as one stream of bytes, so a chunk that ends in the middle of a sample no longer drops the session at input rates other than 16 kHz.
 
 ## 0.2.0
