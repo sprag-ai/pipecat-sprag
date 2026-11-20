@@ -794,6 +794,34 @@ async def test_a_chunk_longer_than_the_scoring_window_keeps_its_latest_window(tu
         await session.close()
 
 
+async def _sent_in_chunks(turns, audio: bytes, sample_rate: int, size: int) -> bytes:
+    server, url = await turns(replay_after=10**9)
+    session = _session(url)
+    try:
+        for start in range(0, len(audio), size):
+            session.push_audio(audio[start : start + size], sample_rate)
+        await session.connect()
+        # one second at 16 kHz is 32,000 bytes; the resampler holds back a short tail
+        await _wait_for(lambda: len(server.received[0]) >= 30000)
+        await asyncio.sleep(0.1)
+        assert session.connected
+        return bytes(server.received[0])
+    finally:
+        await session.close()
+
+
+@pytest.mark.parametrize("sample_rate", [16000, 48000])
+async def test_audio_split_in_the_middle_of_a_sample_is_sent_as_the_audio_split_on_samples(
+    turns, sample_rate: int
+) -> None:
+    audio = b"".join((i * 37 % 20000).to_bytes(2, "little") for i in range(sample_rate))
+    on_samples = await _sent_in_chunks(turns, audio, sample_rate, sample_rate // 25)
+    mid_sample = await _sent_in_chunks(turns, audio, sample_rate, 641)
+    # the resampler rounds a sample differently by where its input was split
+    samples = zip(memoryview(mid_sample).cast("h"), memoryview(on_samples).cast("h"), strict=True)
+    assert max(abs(a - b) for a, b in samples) <= 2
+
+
 async def test_buffered_48_khz_audio_is_capped_at_the_scoring_window(turns) -> None:
     server, url = await turns(replay_after=10**9)
     session = _session(url)

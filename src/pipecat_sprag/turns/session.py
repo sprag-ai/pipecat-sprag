@@ -149,6 +149,7 @@ class TurnsSession:
         self._pending: deque[tuple[bytes, int]] = deque()
         self._pending_bytes = 0
         self._in_flight: tuple[bytes, int] | None = None
+        self._split_sample = b""
         self._lost = asyncio.Event()
         self._agent_text = ""
         self._resampler = create_stream_resampler()
@@ -256,6 +257,9 @@ class TurnsSession:
         only the latest ``SCORING_WINDOW_SECS``. While it is connected, the oldest queued
         audio is dropped once ``AUDIO_QUEUE_FRAMES`` buffers are waiting.
 
+        The audio is read as one stream of bytes: a chunk may be any length and may end in
+        the middle of a sample.
+
         Args:
             audio: Mono PCM16 little-endian samples.
             sample_rate: The audio's sample rate in hertz.
@@ -265,6 +269,12 @@ class TurnsSession:
         """
         if sample_rate <= 0:
             raise ValueError(f"the audio's sample rate must be positive, not {sample_rate}")
+        audio = self._split_sample + audio
+        whole = len(audio) - len(audio) % 2
+        self._split_sample = audio[whole:]
+        audio = audio[:whole]
+        if not audio:
+            return
         if self._websocket is None:
             self._buffer(audio, sample_rate)
             return
