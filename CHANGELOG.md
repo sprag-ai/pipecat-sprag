@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `SpragTurnDetector` and `SpragTurnAnalyzer` read caller audio as one stream of bytes, so a chunk that ends in the middle of a sample no longer drops the session at input rates other than 16 kHz.
+
 ## 0.2.0
 
 ### Added
