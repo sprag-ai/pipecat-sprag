@@ -50,7 +50,13 @@ Sprag's turn model reads the caller's audio, plus what your agent last said, and
 **`SpragTurnDetector`: the model decides the turn.** Place the detector after the transport input, and let the user aggregator follow it with Pipecat's external turn strategies. The model's `turn.started` starts the user's turn and interrupts the bot. Its `turn.ended` commits the turn's audio to Rhythm, and the turn ends once that transcript arrives. No VAD is needed:
 
 ```python
-from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregatorParams
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
 from pipecat.turns.user_start import ExternalUserTurnStartStrategy
 from pipecat.turns.user_stop import ExternalUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -64,6 +70,9 @@ user_params = LLMUserAggregatorParams(
         start=[ExternalUserTurnStartStrategy()],
         stop=[ExternalUserTurnStopStrategy(timeout=0.1)],
     )
+)
+user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+    LLMContext(), user_params=user_params
 )
 
 pipeline = Pipeline(
@@ -83,14 +92,34 @@ worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(turns)])
 
 The stop strategy's `timeout` is how long it waits for further transcripts after one arrives; Pipecat's default is 0.5 s.
 
-**`SpragTurnAnalyzer`: a drop-in turn analyzer.** It takes the place of `LocalSmartTurnAnalyzerV3`, alongside your VAD. Like other streaming analyzers, it reports the turn complete as soon as the model ends it. Create one analyzer for each pipeline:
+**`SpragTurnAnalyzer`: a drop-in turn analyzer.** It takes the place of `LocalSmartTurnAnalyzerV3`, alongside your VAD. Like other streaming analyzers, it reports the turn complete as soon as the model ends it. Create one analyzer for each pipeline. Before building the pipeline, keep your existing `context`, VAD and user turn-start strategies, and replace only the stop strategy:
 
 ```python
+from dataclasses import replace
+
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineWorker
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat_sprag.turns import SpragAgentTextObserver, SpragTurnAnalyzer
 
+# `context` and `existing_user_params` are from your existing VAD-based setup.
 analyzer = SpragTurnAnalyzer()
-stop = [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)]
+existing_strategies = existing_user_params.user_turn_strategies
+analyzer_user_params = replace(
+    existing_user_params,
+    user_turn_strategies=UserTurnStrategies(
+        start=existing_strategies.start if existing_strategies is not None else None,
+        stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)],
+    ),
+)
+user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+    context, user_params=analyzer_user_params
+)
+pipeline = Pipeline(
+    [transport.input(), stt, user_aggregator, llm, tts, transport.output(), assistant_aggregator]
+)
 worker = PipelineWorker(pipeline, observers=[SpragAgentTextObserver(analyzer)])
 ```
 
@@ -164,7 +193,7 @@ Then open http://localhost:7860.
 
 ## Compatibility
 
-Requires `pipecat-ai>=1.8,<2`. Tested with Pipecat v1.12.0.
+Requires `pipecat-ai>=1.12,<2`. Tested with Pipecat v1.12.0.
 
 ## Development
 
